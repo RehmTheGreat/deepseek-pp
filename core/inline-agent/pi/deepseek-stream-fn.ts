@@ -38,7 +38,7 @@ import {
   type ModelTurn,
   type SubmitPromptInput,
 } from '../../deepseek/adapter';
-import { extractToolCalls } from '../../interceptor/tool-parser';
+import { extractLegacyToolCalls, extractToolCalls } from '../../interceptor/tool-parser';
 import { createStreamingToolCallParser } from '../../interceptor/streaming-tool-call-parser';
 import { createStreamingToolTextAccumulator } from '../../interceptor/streaming-tool-text';
 import type { ToolCall as CoreToolCall } from '../../types';
@@ -250,19 +250,24 @@ export function createDeepSeekStreamFn(deps: DeepSeekStreamFnDeps): StreamFn {
 
         onParsed(toolCallParser.flush());
         emitText(textAccumulator.flush());
-        // Dedupe invariant (mismatched-close recovery): the streaming
-        // tool-call parser is the primary parser — every call it emits,
-        // including failed recoveries (tool_call_close_mismatched), has already
-        // bumped toolCallCount via onParsed above. The XML leg of shouldFallback
-        // is gated on `toolCallCount === 0`, so the fallback can never re-emit
-        // a call the streaming parser already recovered. The fallback exists
-        // for the surfaces the streaming parser does not own (legacy ｜DSML｜
-        // blocks) and for replies from which it recovered nothing.
+        // Dedupe invariant (mismatched-close recovery), scoped per branch:
+        // - toolCallCount === 0: the streaming parser emitted nothing, so the
+        //   fallback runs FULL extraction (pure-legacy and XML-only replies
+        //   must still parse).
+        // - toolCallCount > 0: the streaming parser already emitted every XML
+        //   call it could recover (completed or failed), so the fallback is
+        //   restricted to LEGACY ｜DSML｜ blocks only. Full extraction here
+        //   would re-emit an XML call the streaming parser already produced,
+        //   and mapToolCall drops parseError, so the duplicate copy would
+        //   carry the batch best-effort payload and could execute.
         if (!fallbackRawTruncated && fallbackRawText) {
           const shouldFallback = fallbackRawText.includes('｜DSML｜')
             || (toolCallCount === 0 && fallbackRawText.includes('<'));
           if (shouldFallback) {
-            for (const call of extractToolCalls(fallbackRawText, { descriptors: toolDescriptors })) {
+            const fallbackCalls = toolCallCount === 0
+              ? extractToolCalls(fallbackRawText, { descriptors: toolDescriptors })
+              : extractLegacyToolCalls(fallbackRawText, { descriptors: toolDescriptors });
+            for (const call of fallbackCalls) {
               emitToolCall({ name: call.name, invocationName: call.invocationName ?? call.name, payload: call.payload });
             }
           }

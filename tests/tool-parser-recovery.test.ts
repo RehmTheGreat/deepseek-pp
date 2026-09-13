@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import { createArtifactToolDescriptors } from '../core/artifact';
-import { extractToolCalls, replaceToolCallsWithSummary, stripToolCalls } from '../core/interceptor/tool-parser';
+import { extractLegacyToolCalls, extractToolCalls, replaceToolCallsWithSummary, stripToolCalls } from '../core/interceptor/tool-parser';
 import { MISMATCHED_TOOL_CALL_ERROR_CODE } from '../core/tool/execution-error';
 import { createStreamingToolCallParser } from '../core/interceptor/streaming-tool-call-parser';
 
@@ -195,10 +195,12 @@ describe('streaming mismatched-close recovery', () => {
     });
   });
 
-  // Dedupe invariant (deepseek-stream-fn.ts): the fallback parse only fires for
-  // XML when toolCallCount === 0. Streaming recovery emits the mismatched call
-  // as a failed event, so toolCallCount > 0 and the fallback cannot double-emit.
-  it('streaming recovery bumps toolCallCount so the StreamFn fallback cannot double-emit', () => {
+  // Dedupe invariant (deepseek-stream-fn.ts), scoped per branch: the XML leg
+  // of the fallback is gated on toolCallCount === 0, and with toolCallCount > 0
+  // the fallback is restricted to LEGACY ｜DSML｜ blocks (extractLegacyToolCalls)
+  // so a recovered call is never re-emitted — mapToolCall drops parseError, so
+  // a duplicate copy would carry a best-effort payload and could execute.
+  it('streaming recovery bumps toolCallCount so the XML fallback leg cannot fire', () => {
     const raw = '<artifact_create>{"filename":"a.txt"}</invoke><artifact_create>{"filename":"b.txt","content":"x"}</artifact_create>';
     const parser = createStreamingToolCallParser(descriptors);
 
@@ -212,5 +214,69 @@ describe('streaming mismatched-close recovery', () => {
     const shouldFallback = raw.includes('｜DSML｜')
       || (toolCallCount === 0 && raw.includes('<'));
     expect(shouldFallback).toBe(false);
+  });
+
+  it('mixed-format reply: legacy-only fallback emits exactly one mismatched call, no duplicate', () => {
+    const mismatched = '<artifact_create>{"filename":"a.txt"}</invoke>';
+    const legacyBlock = [
+      '<｜DSML｜tool_calls>',
+      '<｜DSML｜invoke name="artifact_create">',
+      '<｜DSML｜parameter name="filename" string="true">legacy.txt</｜DSML｜parameter>',
+      '</｜DSML｜invoke>',
+      '</｜DSML｜tool_calls>',
+    ].join('');
+    const raw = mismatched + legacyBlock;
+    const parser = createStreamingToolCallParser(descriptors);
+
+    const streamed: ReturnType<typeof extractToolCalls> = [];
+    let toolCallCount = 0;
+    for (const event of [parser.append(raw), parser.flush()]) {
+      toolCallCount += event.completed.length + event.failed.length;
+      streamed.push(...event.completed, ...event.failed);
+    }
+    expect(toolCallCount).toBeGreaterThan(0);
+    expect(streamed).toHaveLength(1);
+    expect(streamed[0].parseError?.code).toBe(MISMATCHED_TOOL_CALL_ERROR_CODE);
+
+    // Mirrors deepseek-stream-fn.ts: count > 0 restricts the fallback to
+    // legacy ｜DSML｜ blocks, so the recovered XML call is not re-extracted.
+    const fallbackCalls = toolCallCount === 0
+      ? extractToolCalls(raw, { descriptors })
+      : extractLegacyToolCalls(raw, { descriptors });
+    expect(fallbackCalls).toHaveLength(1);
+    expect(fallbackCalls[0]).toMatchObject({
+      invocationName: 'artifact_create',
+      payload: { filename: 'legacy.txt' },
+    });
+    expect(fallbackCalls.some((call) => call.raw.includes('</invoke>'))).toBe(false);
+
+    const emitted = [...streamed, ...fallbackCalls];
+    expect(emitted.filter((call) => call.parseError?.code === MISMATCHED_TOOL_CALL_ERROR_CODE))
+      .toHaveLength(1);
+  });
+
+  it('pure-legacy reply with toolCallCount === 0 still parses via full fallback extraction', () => {
+    const raw = [
+      '<｜DSML｜tool_calls>',
+      '<｜DSML｜invoke name="artifact_create">',
+      '<｜DSML｜parameter name="filename" string="true">legacy.txt</｜DSML｜parameter>',
+      '</｜DSML｜invoke>',
+      '</｜DSML｜tool_calls>',
+    ].join('');
+    const parser = createStreamingToolCallParser(descriptors);
+
+    let toolCallCount = 0;
+    for (const event of [parser.append(raw), parser.flush()]) {
+      toolCallCount += event.completed.length + event.failed.length;
+    }
+    expect(toolCallCount).toBe(0);
+
+    // count === 0 keeps full extraction: pure-legacy replies must still work.
+    const fallbackCalls = extractToolCalls(raw, { descriptors });
+    expect(fallbackCalls).toHaveLength(1);
+    expect(fallbackCalls[0]).toMatchObject({
+      invocationName: 'artifact_create',
+      payload: { filename: 'legacy.txt' },
+    });
   });
 });

@@ -24,8 +24,18 @@ export function extractToolCalls(text: string, input?: ToolParsingInput): ToolCa
   const catalog = createToolInvocationCatalog(input?.descriptors);
   return [
     ...extractXmlToolCalls(text, catalog),
-    ...extractLegacyToolCalls(text, catalog),
+    ...extractLegacyToolCallsForCatalog(text, catalog),
   ];
+}
+
+/**
+ * Extracts ONLY legacy `｜DSML｜tool_calls` blocks (linear scan). The StreamFn
+ * fallback uses this when the streaming parser already emitted XML calls, so a
+ * recovered or complete XML call can never be re-emitted by the fallback.
+ */
+export function extractLegacyToolCalls(text: string, input?: ToolParsingInput): ToolCall[] {
+  const catalog = createToolInvocationCatalog(input?.descriptors);
+  return extractLegacyToolCallsForCatalog(text, catalog);
 }
 
 /**
@@ -216,7 +226,7 @@ function createMismatchedCloseToolCall(
  * Linear-time legacy `｜DSML｜tool_calls` extraction. Replaces the
  * `[\s\S]*?`-based legacy regexes (same ReDoS class as the XML parser).
  */
-function extractLegacyToolCalls(text: string, catalog: ToolInvocationCatalog): ToolCall[] {
+function extractLegacyToolCallsForCatalog(text: string, catalog: ToolInvocationCatalog): ToolCall[] {
   const calls: ToolCall[] = [];
   let fromIndex = 0;
 

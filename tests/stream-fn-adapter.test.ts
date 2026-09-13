@@ -197,6 +197,70 @@ describe('createDeepSeekStreamFn', () => {
     }
   });
 
+  it('emits exactly one mismatched XML call in a mixed legacy+XML reply (no fallback duplicate)', async () => {
+    // Mismatched-close recovery dedupe (review finding): the streaming parser
+    // recovers the foreign-closed XML call (toolCallCount = 1), so the
+    // ｜DSML｜ fallback leg must run LEGACY-ONLY extraction — a full extraction
+    // would re-emit the recovered call, and mapToolCall drops parseError, so
+    // the duplicate would carry a best-effort payload and could execute.
+    const mixed = [
+      '<artifact_create>{"filename":"a.txt"}</invoke>',
+      ' Legacy: <｜DSML｜tool_calls>',
+      '<｜DSML｜invoke name="artifact_create">',
+      '<｜DSML｜parameter name="filename" string="true">legacy.txt</｜DSML｜parameter>',
+      '</｜DSML｜invoke></｜DSML｜tool_calls>',
+    ].join('');
+    adapterMocks.submitPromptStreaming.mockImplementationOnce(async (_input, handlers) => {
+      handlers.onTextChunk(mixed);
+      return turnResult();
+    });
+
+    const events = await collectEvents(createDeps());
+
+    const done = events.at(-1);
+    expect(done?.type).toBe('done');
+    if (done?.type === 'done') {
+      expect(done.reason).toBe('toolUse');
+      const toolCalls = done.message.content.filter((block) => block.type === 'toolCall');
+      // Exactly two calls: the streaming recovery copy (createIncompleteCall-
+      // style empty payload — inert without its required arguments) and the
+      // legacy fallback call. No second, payload-bearing duplicate of the
+      // mismatched call may be emitted by the fallback.
+      expect(toolCalls).toEqual([
+        { type: 'toolCall', id: 'xml:0', name: 'artifact_create', arguments: {} },
+        { type: 'toolCall', id: 'xml:1', name: 'artifact_create', arguments: { filename: 'legacy.txt' } },
+      ]);
+    }
+  });
+
+  it('keeps full fallback extraction for a pure-legacy reply when no call was streamed', async () => {
+    // toolCallCount === 0 branch: the ｜DSML｜ fallback stays a full
+    // extractToolCalls run so pure-legacy replies keep parsing.
+    const legacyOnly = [
+      '<｜DSML｜tool_calls>',
+      '<｜DSML｜invoke name="artifact_create">',
+      '<｜DSML｜parameter name="filename" string="true">legacy.txt</｜DSML｜parameter>',
+      '</｜DSML｜invoke>',
+      '</｜DSML｜tool_calls>',
+    ].join('');
+    adapterMocks.submitPromptStreaming.mockImplementationOnce(async (_input, handlers) => {
+      handlers.onTextChunk(legacyOnly);
+      return turnResult();
+    });
+
+    const events = await collectEvents(createDeps());
+
+    const done = events.at(-1);
+    expect(done?.type).toBe('done');
+    if (done?.type === 'done') {
+      expect(done.reason).toBe('toolUse');
+      const toolCalls = done.message.content.filter((block) => block.type === 'toolCall');
+      expect(toolCalls).toEqual([
+        { type: 'toolCall', id: 'xml:0', name: 'artifact_create', arguments: { filename: 'legacy.txt' } },
+      ]);
+    }
+  });
+
   it('builds the turn request from session, serializer and turn defaults', async () => {
     adapterMocks.submitPromptStreaming.mockImplementationOnce(async (_input, handlers) => {
       handlers.onTextChunk('ok');
