@@ -56,6 +56,38 @@ import type {
 const INLINE_AGENT_MAX_STEP_ATTEMPTS = 2;
 const INLINE_AGENT_POW_ATTEMPTS = 2;
 
+/**
+ * User-visible texts for an interrupted turn. Byte-stable contract: the
+ * auto-resume machinery classifies interrupted turns by matching these exact
+ * messages (see {@link isDeepSeekInterruptedTurnError}).
+ */
+export const DEEPSEEK_INTERRUPTED_TIMEOUT_MESSAGE =
+  'DeepSeek agent step timed out while streaming; the response was interrupted.';
+export const DEEPSEEK_INTERRUPTED_ENDED_MESSAGE =
+  'DeepSeek response stream ended before completion (the response was interrupted).';
+
+/**
+ * Machine-readable classifier for "this turn was interrupted": the streamed
+ * response never completed, so the next turn must resume from the session
+ * chain instead of assuming a finished reply. Matches the two interrupted
+ * messages above plus any PoW-phase failure text (a PoW failure means the
+ * turn was never submitted, so the response was interrupted before it
+ * started). Verified PoW-phase shapes:
+ *  - `NetworkPolicyError('network_deadline_exceeded')` for the PoW operation:
+ *    "DeepSeek PoW challenge exceeded its execution deadline."
+ *  - `DeepSeekPowError`: "DeepSeek PoW challenge failed: …",
+ *    "DeepSeek PoW challenge returned non-JSON HTTP …",
+ *    "Failed to create DeepSeek PoW challenge: …".
+ * Auth rejections are deliberately excluded (they need re-authentication,
+ * not resume).
+ */
+export function isDeepSeekInterruptedTurnError(message: string): boolean {
+  return message === DEEPSEEK_INTERRUPTED_TIMEOUT_MESSAGE
+    || message === DEEPSEEK_INTERRUPTED_ENDED_MESSAGE
+    || message.startsWith('DeepSeek PoW challenge')
+    || message.startsWith('Failed to create DeepSeek PoW challenge');
+}
+
 export interface DeepSeekTurnSubmitterOptions {
   powWasmUrl?: string;
 }
@@ -209,7 +241,7 @@ export function createDeepSeekStreamFn(deps: DeepSeekStreamFnDeps): StreamFn {
         // of stopping on a seemingly normal message. User aborts keep their
         // silent 'aborted' semantics.
         if (!result.finished && !signal?.aborted) {
-          throw new Error('DeepSeek response stream ended before completion (the response was interrupted).');
+          throw new Error(DEEPSEEK_INTERRUPTED_ENDED_MESSAGE);
         }
 
         // The conversation chain authority: the page session, not this turn's
@@ -290,10 +322,13 @@ async function createPowHeadersWithRetry(
 
 /**
  * Submits one turn with a bounded single retry. A retry is only allowed when
- * the request failed before any text chunk was received: once the server has
- * streamed content the turn is likely committed server-side, and replaying it
- * with the same parent message could fork the conversation chain. User abort
- * is never retried. Mirrors the original loop's `submitAgentTurn`.
+ * the request failed before any chunk was received (text or reasoning): once
+ * the server has streamed content the turn is likely committed server-side,
+ * and replaying it with the same parent message could fork the conversation
+ * chain — such interrupted turns surface as
+ * {@link DEEPSEEK_INTERRUPTED_TIMEOUT_MESSAGE} /
+ * {@link DEEPSEEK_INTERRUPTED_ENDED_MESSAGE} instead of being retried. User
+ * abort is never retried. Mirrors the original loop's `submitAgentTurn`.
  */
 async function submitWithRetry(
   input: SubmitPromptInput,
@@ -331,8 +366,13 @@ async function submitWithRetry(
     } catch (err) {
       if (signal.aborted) throw err;
       const timeoutFired = stepTimeout.timedOut();
-      if (timeoutFired && receivedAnyChunk) {
-        throw new Error('DeepSeek agent step timed out while streaming; the response was interrupted.');
+      // Any received chunk means the turn was likely committed server-side:
+      // resubmitting with the same parent_message_id could fork the
+      // conversation chain, so the interrupted turn is surfaced as an error
+      // no matter what failed (RC2/M3). No-chunk failures keep their bounded
+      // retry below.
+      if (receivedAnyChunk) {
+        throw new Error(timeoutFired ? DEEPSEEK_INTERRUPTED_TIMEOUT_MESSAGE : DEEPSEEK_INTERRUPTED_ENDED_MESSAGE);
       }
       if (attempt >= INLINE_AGENT_MAX_STEP_ATTEMPTS) {
         if (timeoutFired) throw new Error('DeepSeek agent step timed out after retry.');

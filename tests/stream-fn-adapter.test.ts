@@ -29,9 +29,13 @@ vi.mock('../core/deepseek/adapter', () => ({
   submitPromptStreaming: adapterMocks.submitPromptStreaming,
 }));
 
-const { createDeepSeekStreamFn, createDeepSeekTurnSubmitter } = await import(
-  '../core/inline-agent/pi/deepseek-stream-fn'
-);
+const {
+  createDeepSeekStreamFn,
+  createDeepSeekTurnSubmitter,
+  DEEPSEEK_INTERRUPTED_TIMEOUT_MESSAGE,
+  DEEPSEEK_INTERRUPTED_ENDED_MESSAGE,
+  isDeepSeekInterruptedTurnError,
+} = await import('../core/inline-agent/pi/deepseek-stream-fn');
 
 const TOOL_CALL_TEXT = '<artifact_create>{"filename":"a.txt","content":"ok"}</artifact_create>';
 
@@ -369,6 +373,45 @@ describe('createDeepSeekStreamFn', () => {
     }
   });
 
+  it('never resubmits after a mid-stream network reset following text chunks', async () => {
+    // A non-timeout failure after streamed content is still a committed
+    // server-side turn: resubmitting with the same parent_message_id could
+    // fork the chain, so the reset surfaces as the interrupted-stream error.
+    adapterMocks.submitPromptStreaming.mockImplementation(async (_input, handlers) => {
+      handlers.onTextChunk('partial ');
+      handlers.onTextChunk('text');
+      throw new TypeError('network error: load failed');
+    });
+
+    const deps = createDeps();
+    const events = await collectEvents(deps);
+
+    expect(adapterMocks.submitPromptStreaming).toHaveBeenCalledTimes(1);
+    const last = events.at(-1);
+    expect(last?.type).toBe('error');
+    if (last?.type === 'error') {
+      expect(last.error.errorMessage).toBe(DEEPSEEK_INTERRUPTED_ENDED_MESSAGE);
+    }
+    expect(deps.session.updates).toEqual([]);
+  });
+
+  it('never resubmits after a mid-stream network reset following reasoning-only chunks', async () => {
+    adapterMocks.submitPromptStreaming.mockImplementation(async (_input, handlers) => {
+      handlers.onReasoningChunk?.('我先分析', '我先分析');
+      throw new TypeError('network error: load failed');
+    });
+
+    const deps = createDeps();
+    const events = await collectEvents(deps);
+
+    expect(adapterMocks.submitPromptStreaming).toHaveBeenCalledTimes(1);
+    const last = events.at(-1);
+    expect(last?.type).toBe('error');
+    if (last?.type === 'error') {
+      expect(last.error.errorMessage).toBe(DEEPSEEK_INTERRUPTED_ENDED_MESSAGE);
+    }
+  });
+
   it('forwards token speed progress through the optional dep callback', async () => {
     const progress = { modelType: 'default', tokenSpeed: 42 };
     adapterMocks.submitPromptStreaming.mockImplementationOnce(async (_input, handlers) => {
@@ -455,5 +498,34 @@ describe('createDeepSeekStreamFn', () => {
     const last = events.at(-1);
     expect(last?.type).toBe('error');
     if (last?.type === 'error') expect(last.reason).toBe('aborted');
+  });
+});
+
+describe('isDeepSeekInterruptedTurnError', () => {
+  it('classifies interrupted-turn and PoW-phase failure messages', () => {
+    expect(isDeepSeekInterruptedTurnError(DEEPSEEK_INTERRUPTED_TIMEOUT_MESSAGE)).toBe(true);
+    expect(isDeepSeekInterruptedTurnError(DEEPSEEK_INTERRUPTED_ENDED_MESSAGE)).toBe(true);
+    // PoW deadline: NetworkPolicyError('network_deadline_exceeded') message.
+    expect(
+      isDeepSeekInterruptedTurnError('DeepSeek PoW challenge exceeded its execution deadline.'),
+    ).toBe(true);
+    // DeepSeekPowError shapes (solve failure wraps the WASM/timeout text,
+    // non-JSON response, and server-rejected challenge creation).
+    expect(
+      isDeepSeekInterruptedTurnError('DeepSeek PoW challenge failed: Request exceeded 15000 ms.'),
+    ).toBe(true);
+    expect(
+      isDeepSeekInterruptedTurnError('DeepSeek PoW challenge returned non-JSON HTTP 502: Bad Gateway'),
+    ).toBe(true);
+    expect(
+      isDeepSeekInterruptedTurnError('Failed to create DeepSeek PoW challenge: {"biz_code":555}'),
+    ).toBe(true);
+    // Not interrupted turns: unrelated failures, auth rejections (need
+    // re-authentication, not resume) and the no-chunk timeout-after-retry.
+    expect(isDeepSeekInterruptedTurnError('network down')).toBe(false);
+    expect(
+      isDeepSeekInterruptedTurnError('DeepSeek auth token was rejected (HTTP 401) while creating PoW challenge.'),
+    ).toBe(false);
+    expect(isDeepSeekInterruptedTurnError('DeepSeek agent step timed out after retry.')).toBe(false);
   });
 });
