@@ -10,6 +10,7 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import type { AssistantMessageEvent, Api, Context, Message, Model } from '@earendil-works/pi-ai';
 import { createArtifactToolDescriptors } from '../core/artifact';
+import { DeepSeekAuthError } from '../core/deepseek/errors';
 import type { ToolDescriptor } from '../core/types';
 import type {
   DeepSeekSessionState,
@@ -253,6 +254,12 @@ describe('createDeepSeekStreamFn', () => {
     const controller = new AbortController();
     adapterMocks.submitPromptStreaming.mockImplementation((_input, _handlers, signal) =>
       new Promise((_resolve, reject) => {
+        // The real request policy rejects an already-aborted caller signal
+        // instead of waiting for an abort event that can no longer fire.
+        if (signal?.aborted) {
+          reject(signal.reason);
+          return;
+        }
         signal?.addEventListener('abort', () => reject(signal.reason), { once: true });
       }),
     );
@@ -375,5 +382,78 @@ describe('createDeepSeekStreamFn', () => {
     await collectEvents(deps);
 
     expect(onTokenSpeed).toHaveBeenCalledWith(progress);
+  });
+
+  it('retries PoW once when the first solve fails, then submits the turn', async () => {
+    vi.useFakeTimers();
+    adapterMocks.createPowHeaders
+      .mockRejectedValueOnce(new Error('pow transient'))
+      .mockResolvedValueOnce({ 'X-DS-PoW-Response': 'pow-2' });
+    adapterMocks.submitPromptStreaming.mockImplementationOnce(async (_input, handlers) => {
+      handlers.onTextChunk('recovered');
+      return turnResult();
+    });
+
+    const deps = createDeps();
+    const streamFn = createDeepSeekStreamFn(deps);
+    const stream = await streamFn(TEST_MODEL, EMPTY_CONTEXT, {});
+    const events: AssistantMessageEvent[] = [];
+    const drain = (async () => {
+      for await (const event of stream) events.push(event);
+    })();
+    await vi.advanceTimersByTimeAsync(7_000);
+    await drain;
+
+    expect(adapterMocks.createPowHeaders).toHaveBeenCalledTimes(2);
+    // Both PoW attempts run on the same forwarded turn signal.
+    expect(adapterMocks.createPowHeaders.mock.calls[0][2])
+      .toBe(adapterMocks.createPowHeaders.mock.calls[1][2]);
+    expect(adapterMocks.submitPromptStreaming).toHaveBeenCalledTimes(1);
+    expect(events.some((e) => e.type === 'error')).toBe(false);
+    expect(events.at(-1)?.type).toBe('done');
+  });
+
+  it('does not retry PoW after an auth rejection', async () => {
+    adapterMocks.createPowHeaders.mockRejectedValue(
+      new DeepSeekAuthError('DeepSeek auth token was rejected (HTTP 401) while creating PoW challenge.'),
+    );
+
+    const deps = createDeps();
+    const events = await collectEvents(deps);
+
+    expect(adapterMocks.createPowHeaders).toHaveBeenCalledTimes(1);
+    expect(adapterMocks.submitPromptStreaming).not.toHaveBeenCalled();
+    const last = events.at(-1);
+    expect(last?.type).toBe('error');
+    if (last?.type === 'error') {
+      expect(last.error.errorMessage).toBe(
+        'DeepSeek auth token was rejected (HTTP 401) while creating PoW challenge.',
+      );
+    }
+  });
+
+  it('forwards the turn signal so an abort during PoW fails without retry', async () => {
+    const controller = new AbortController();
+    adapterMocks.createPowHeaders.mockImplementation((_headers, _url, signal) =>
+      new Promise((_resolve, reject) => {
+        signal?.addEventListener('abort', () => reject(signal.reason), { once: true });
+      }),
+    );
+
+    const deps = createDeps();
+    const streamFn = createDeepSeekStreamFn(deps);
+    const stream = await streamFn(TEST_MODEL, EMPTY_CONTEXT, { signal: controller.signal });
+    const events: AssistantMessageEvent[] = [];
+    const drain = (async () => {
+      for await (const event of stream) events.push(event);
+    })();
+    controller.abort(new DOMException('user cancelled', 'AbortError'));
+    await drain;
+
+    expect(adapterMocks.createPowHeaders).toHaveBeenCalledTimes(1);
+    expect(adapterMocks.submitPromptStreaming).not.toHaveBeenCalled();
+    const last = events.at(-1);
+    expect(last?.type).toBe('error');
+    if (last?.type === 'error') expect(last.reason).toBe('aborted');
   });
 });

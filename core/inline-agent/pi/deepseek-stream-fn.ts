@@ -43,6 +43,7 @@ import { createStreamingToolCallParser } from '../../interceptor/streaming-tool-
 import { createStreamingToolTextAccumulator } from '../../interceptor/streaming-tool-text';
 import type { ToolCall as CoreToolCall } from '../../types';
 import { createStepSignal, waitBetweenDeepSeekRequests } from '../step-control';
+import { DeepSeekAuthError } from '../../deepseek/errors';
 import type {
   DeepSeekStreamFnDeps,
   DeepSeekTurnCallbacks,
@@ -53,14 +54,15 @@ import type {
 } from './stream-fn-port';
 
 const INLINE_AGENT_MAX_STEP_ATTEMPTS = 2;
+const INLINE_AGENT_POW_ATTEMPTS = 2;
 
 export interface DeepSeekTurnSubmitterOptions {
   powWasmUrl?: string;
 }
 
 /**
- * Builds the turn submitter: one turn = one PoW solve + bounded no-chunk
- * retry + 120s step timeout, mirroring the original `submitAgentTurn`.
+ * Builds the turn submitter: one turn = one bounded PoW solve + bounded
+ * no-chunk retry + 120s step timeout, mirroring the original `submitAgentTurn`.
  */
 export function createDeepSeekTurnSubmitter(
   options: DeepSeekTurnSubmitterOptions = {},
@@ -69,7 +71,7 @@ export function createDeepSeekTurnSubmitter(
 
   return async (request, callbacks, signal) => {
     const clientHeaders = createClientHeaders();
-    const powHeaders = await createPowHeaders(clientHeaders, powWasmUrl);
+    const powHeaders = await createPowHeadersWithRetry(clientHeaders, powWasmUrl, signal);
     const input: SubmitPromptInput = {
       chatSessionId: request.chatSessionId,
       parentMessageId: request.parentMessageId,
@@ -259,6 +261,32 @@ export function createDeepSeekStreamFn(deps: DeepSeekStreamFnDeps): StreamFn {
 // ---------------------------------------------------------------------------
 // Helpers
 // ---------------------------------------------------------------------------
+
+/**
+ * Solves PoW for one turn with a bounded retry. The turn signal is forwarded
+ * into every attempt so a user abort cancels a pending solve immediately, and
+ * transient PoW/network failures get one throttled retry; auth rejections are
+ * never retried (the token must be refreshed first). The final failure is
+ * rethrown unchanged — the loop layer classifies it.
+ */
+async function createPowHeadersWithRetry(
+  clientHeaders: Record<string, string>,
+  powWasmUrl: string | undefined,
+  parentSignal: AbortSignal | undefined,
+): Promise<Record<string, string>> {
+  const signal = parentSignal ?? new AbortController().signal;
+  for (let attempt = 1; attempt <= INLINE_AGENT_POW_ATTEMPTS; attempt++) {
+    try {
+      return await createPowHeaders(clientHeaders, powWasmUrl, signal);
+    } catch (err) {
+      if (signal.aborted || err instanceof DeepSeekAuthError) throw err;
+      if (attempt >= INLINE_AGENT_POW_ATTEMPTS) throw err;
+      await waitBetweenDeepSeekRequests(signal);
+      if (signal.aborted) throw err;
+    }
+  }
+  throw new Error('DeepSeek PoW retry loop exited without a completed attempt.');
+}
 
 /**
  * Submits one turn with a bounded single retry. A retry is only allowed when
