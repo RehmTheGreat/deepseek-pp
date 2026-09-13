@@ -78,6 +78,11 @@ import { shouldIgnoreEmptyTokenSpeedProgress } from "../core/deepseek/stream-met
 import { readDeepSeekChatSessionId } from "../core/deepseek/chat-session";
 import { createUsageProgressWriteCoordinator } from "../core/usage/progress-write-coordinator";
 import { runInlineAgentLoop } from "../core/inline-agent/loop";
+import {
+  isToolDeadlineTimeout,
+  raceWithDeadline,
+  shapeToolDeadlineTimeout,
+} from "../core/inline-agent/step-control";
 import { waitForInlineAgentLiveTarget } from "../core/inline-agent/live-target-wait";
 import {
   isInlineAgentNativeHistoryBackedTrace,
@@ -117,6 +122,7 @@ import type {
   InlineAgentTraceRecord,
   InlineAgentTraceStepRecord,
 } from "../core/inline-agent/types";
+import { INLINE_AGENT_TOOL_CALL_TIMEOUT_MS } from "../core/inline-agent/types";
 import {
   injectInlineAgentStyles,
   removeInlineAgentStyles,
@@ -4880,7 +4886,26 @@ async function startInlineAgentLoop(
         runId: payload.loopId,
       },
     });
-    const result = await executeToolCall(enrichedCall, authorization.id);
+    const outcome = await raceWithDeadline(
+      executeToolCall(enrichedCall, authorization.id),
+      abort.signal,
+      INLINE_AGENT_TOOL_CALL_TIMEOUT_MS,
+    );
+    if (isToolDeadlineTimeout(outcome)) {
+      // Deadline expiry (fix/v1.14.1-tool-loop): fail the tool with a normal
+      // error record so the pi loop continues instead of freezing at
+      // `executing_tools` forever behind a stranded background handler.
+      return {
+        name: call.name,
+        result: shapeToolDeadlineTimeout(
+          enrichedCall,
+          contentT("content.agent.toolDeadline"),
+        ),
+        provider: call.provider,
+        descriptorId: call.descriptorId,
+      };
+    }
+    const result = outcome;
     return {
       name: result.name ?? call.name,
       result: {
