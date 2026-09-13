@@ -157,6 +157,31 @@ export function buildContinuationPrompt(
   ].join('\n');
 }
 
+/**
+ * Builds the resume prompt for an interrupted turn (fix/v1.14.1-tool-loop):
+ * continuation-style framing — instruction lines plus the `<original_task>`
+ * block, like `buildContinuationPrompt` — but with NO `<tool_results>` (the
+ * interrupted stream died before its tools could matter; prior results are
+ * already in the conversation chain) and deliberately NO
+ * `<previous_assistant_text>` (its nudge semantics do not apply to a stream
+ * that never completed). The model continues the same task from the last
+ * committed chain point without repeating completed work.
+ */
+export function buildResumePrompt(
+  originalTask: string,
+  resumeCount: number,
+  locale: SupportedLocale = DEFAULT_LOCALE,
+): string {
+  return [
+    translate(locale, 'prompt.inlineAgent.resumeInterrupted'),
+    translate(locale, 'prompt.inlineAgent.resumeCount', { count: resumeCount }),
+    '',
+    '<original_task>',
+    clampText(originalTask, 8000),
+    '</original_task>',
+  ].join('\n');
+}
+
 export function buildNudgePrompt(
   originalTask: string,
   previousText: string,

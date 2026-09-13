@@ -2,6 +2,7 @@ import { describe, expect, it } from 'vitest';
 import {
   buildContinuationPrompt,
   buildNudgePrompt,
+  buildResumePrompt,
   isInlineAgentContinuationPrompt,
   isInlineAgentContinuationStructure,
   normalizeInlineAgentFinalAnswerText,
@@ -312,6 +313,32 @@ describe('inline-agent model prompts', () => {
 
     expect(english).toContain('This is no-tool-call correction attempt 1.');
     expect(chinese).toContain('这是第 1 次无工具调用纠偏。');
+  });
+
+  it('builds resume prompts with the original task framing and no nudge semantics', () => {
+    const english = buildResumePrompt('Research quarterly data', 1, 'en');
+    const chinese = buildResumePrompt('调研季度数据', 2, 'zh-CN');
+
+    expect(english).toContain(
+      'Your previous response was interrupted mid-stream. Continue exactly where you left off; do not repeat completed work.',
+    );
+    expect(english).toContain('This is stream-interruption resume attempt 1.');
+    expect(chinese).toContain('你之前的回复在流式输出中途被打断');
+    expect(chinese).toContain('这是第 2 次流中断续跑。');
+    for (const prompt of [english, chinese]) {
+      expect(prompt).toContain('<original_task>');
+      expect(prompt).toContain('</original_task>');
+      // Nudge semantics do not apply to an interrupted stream.
+      expect(prompt).not.toContain('<previous_assistant_text>');
+    }
+  });
+
+  it('clamps the resume prompt task at 8000 chars', () => {
+    const prompt = buildResumePrompt('T'.repeat(8_001), 1, 'en');
+    const task = prompt.match(/<original_task>\n([\s\S]*?)\n<\/original_task>/)?.[1] ?? '';
+
+    expect(task.length).toBe(8_015);
+    expect(task.endsWith('\n...[truncated]')).toBe(true);
   });
 
   it('keeps recent tool results full and compresses older executions', () => {
