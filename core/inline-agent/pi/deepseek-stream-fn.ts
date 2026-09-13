@@ -250,6 +250,14 @@ export function createDeepSeekStreamFn(deps: DeepSeekStreamFnDeps): StreamFn {
 
         onParsed(toolCallParser.flush());
         emitText(textAccumulator.flush());
+        // Dedupe invariant (mismatched-close recovery): the streaming
+        // tool-call parser is the primary parser — every call it emits,
+        // including failed recoveries (tool_call_close_mismatched), has already
+        // bumped toolCallCount via onParsed above. The XML leg of shouldFallback
+        // is gated on `toolCallCount === 0`, so the fallback can never re-emit
+        // a call the streaming parser already recovered. The fallback exists
+        // for the surfaces the streaming parser does not own (legacy ｜DSML｜
+        // blocks) and for replies from which it recovered nothing.
         if (!fallbackRawTruncated && fallbackRawText) {
           const shouldFallback = fallbackRawText.includes('｜DSML｜')
             || (toolCallCount === 0 && fallbackRawText.includes('<'));
