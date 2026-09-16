@@ -110,6 +110,12 @@ export const content = {
     codeRunnerUnavailable: '代码运行器不可用',
     superseded: '已被新消息取代：此任务已停止，新的 Agent 任务正在处理你的新消息。',
     midRunRefused: 'Agent 正在执行中，且此消息无法为其启动新的 Agent 任务。如需重定向，请先点击 Agent 面板中的「停止」，再重新发送消息。',
+    subagentRunning: '子代理 · 第 {step} 步',
+    subagentComplete: '子代理完成 · {steps} 步 · {tools} 次工具调用',
+    subagentError: '子代理失败 · {steps} 步 · {tools} 次工具调用',
+    subagentStatusDetail: '子代理运行{status} · {steps} 步 · {tools} 次工具调用',
+    subagentNoFinalText: '子代理运行已完成，但未返回文本。',
+    subagentUnavailable: '子代理工具在当前运行中不可用。',
   },
   permission: {
     webFetch: 'DeepSeek++ 需要访问 {origin} 的权限以获取该页面内容',

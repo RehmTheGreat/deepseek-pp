@@ -212,4 +212,11 @@ export const tool = {
     evaluateScriptTitle: '执行脚本',
     evaluateScriptDescription: '在受控页面中执行 JavaScript 表达式并返回可序列化结果。',
   },
+  inlineAgent: {
+    displayName: 'DeepSeek++ 内联代理',
+    spawnTitle: '运行子代理',
+    spawnDescription: '启动一个聚焦的子代理任务来执行一个自包含的任务，并用其结果继续当前任务。子代理不能再启动子代理，使用本对话的工具（可用 toolAllowlistHint 收窄），其最终回答将作为本工具的结果返回。',
+    taskDescription: '子代理任务的完整、自包含描述，需包含目标、上下文与期望交付物。',
+    hintDescription: '可选的提示性工具名单：仅列出应暴露给子代理的工具名称，未列出的工具将被隐藏，未知名称将被忽略。',
+  },
 } as const;

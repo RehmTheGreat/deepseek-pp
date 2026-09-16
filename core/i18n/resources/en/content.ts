@@ -110,6 +110,12 @@ export const content = {
     codeRunnerUnavailable: 'Code runner unavailable',
     superseded: 'Superseded by your new message: this run was stopped and a new agent run is working on it.',
     midRunRefused: 'An agent is still running and this message cannot start a new agent run for it. To redirect the agent, click Stop in the agent panel, then send your message again.',
+    subagentRunning: 'Subagent · step {step}',
+    subagentComplete: 'Subagent complete · {steps} steps · {tools} tool calls',
+    subagentError: 'Subagent failed · {steps} steps · {tools} tool calls',
+    subagentStatusDetail: 'Subagent run {status} · {steps} steps · {tools} tool calls',
+    subagentNoFinalText: 'The subagent run completed without returning text.',
+    subagentUnavailable: 'The subagent tool is not available in this run.',
   },
   permission: {
     webFetch: 'DeepSeek++ needs permission to access {origin} so it can fetch that page',

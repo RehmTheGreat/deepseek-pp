@@ -212,4 +212,11 @@ export const tool = {
     evaluateScriptTitle: 'Evaluate script',
     evaluateScriptDescription: 'Run JavaScript in the controlled page and return a serializable result.',
   },
+  inlineAgent: {
+    displayName: 'DeepSeek++ Inline Agent',
+    spawnTitle: 'Run a subagent',
+    spawnDescription: 'Start one focused subagent run to carry out a self-contained task, then continue the parent task with its result. The subagent cannot start further subagents, runs with this conversation\'s tools (optionally narrowed by toolAllowlistHint), and returns its final answer as this tool\'s result.',
+    taskDescription: 'Complete, self-contained task description for the subagent run. Include everything it needs: goal, context, and the expected deliverable.',
+    hintDescription: 'Optional advisory list of tool names to expose to the subagent. Tools not listed are hidden; unknown names are ignored.',
+  },
 } as const;

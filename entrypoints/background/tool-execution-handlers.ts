@@ -1,4 +1,5 @@
 import type { SupportedLocale } from '../../core/i18n';
+import { withInlineAgentSubagentSpawnDescriptor } from '../../core/inline-agent/subagent-tool';
 import {
   definePayloadlessRuntimeCommandHandler,
   type RuntimeCommandHandler,
@@ -106,12 +107,21 @@ export function createToolExecutionRuntimeHandlers(
       const currentDescriptors = payload.descriptorIds
         ? await dependencies.getToolDescriptors(locale)
         : await dependencies.getPromptToolDescriptors(locale, payload.toolIntent ?? '');
+      // P1 subagent (M5): the spawn tool is agent-run-only. It never enters
+      // the shared prompt catalogs (manual chat / sidepanel / automation
+      // prompts stay byte-identical); agent-run grants resolve it so the
+      // parent inline-agent loop can advertise and execute it through the
+      // loop's authorized path. Descriptor text/identity come from the single
+      // factory in core/inline-agent/subagent-tool.ts.
+      const grantableDescriptors = payload.trigger === 'agent_run'
+        ? withInlineAgentSubagentSpawnDescriptor(currentDescriptors)
+        : currentDescriptors;
       const requestedDescriptorIds = payload.descriptorIds
         ? new Set(payload.descriptorIds)
         : null;
       const descriptors = requestedDescriptorIds
-        ? currentDescriptors.filter((descriptor) => requestedDescriptorIds.has(descriptor.id))
-        : currentDescriptors;
+        ? grantableDescriptors.filter((descriptor) => requestedDescriptorIds.has(descriptor.id))
+        : grantableDescriptors;
       if (requestedDescriptorIds && descriptors.length !== requestedDescriptorIds.size) {
         return { ok: false as const, error: 'unknown_tool_authorization_descriptor' };
       }

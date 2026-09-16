@@ -73,11 +73,18 @@ export interface PiLoopAdapterDeps {
   post: PostFn;
   executeTool: ExecuteToolFn;
   signal: AbortSignal;
+  /**
+   * M5 minimal read accessor for the loop's DS-web chain authority (the
+   * session created below). The subagent-spawn executor reads the parent's
+   * LIVE `parentMessageId` from it to anchor each child chain; it never
+   * writes through it. Optional: absent in every other consumer.
+   */
+  sessionRef?: { current: DeepSeekSessionState | null };
 }
 
 /** Runs the pi engine with the released inline-agent semantics. */
 export async function runPiInlineAgentLoop(deps: PiLoopAdapterDeps): Promise<void> {
-  const { payload, post, executeTool, signal } = deps;
+  const { payload, post, executeTool, signal, sessionRef } = deps;
   const { loopId, chatSessionId, toolDescriptors, promptOptions } = payload;
   const { powWasmUrl } = payload;
   const locale = payload.locale ?? DEFAULT_LOCALE;
@@ -90,6 +97,9 @@ export async function runPiInlineAgentLoop(deps: PiLoopAdapterDeps): Promise<voi
       session.parentMessageId = id;
     },
   };
+  // M5: publish the chain authority to the caller's read-only ref (if it
+  // provided one) so the spawn executor sees the LIVE anchor.
+  if (sessionRef) sessionRef.current = session;
 
   // Chain authority by backend (B2): the web path uses the DS page session
   // chain (`parentMessageId`); the official-API path has no page chain — the

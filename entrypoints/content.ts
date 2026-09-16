@@ -79,6 +79,18 @@ import { readDeepSeekChatSessionId } from "../core/deepseek/chat-session";
 import { createUsageProgressWriteCoordinator } from "../core/usage/progress-write-coordinator";
 import { runInlineAgentLoop } from "../core/inline-agent/loop";
 import {
+  INLINE_AGENT_SUBAGENT_LOOP_ID_PREFIX,
+  createInlineAgentSubagentRunner,
+  type InlineAgentSubagentRunner,
+} from "../core/inline-agent/subagent";
+import {
+  describeInlineAgentSubagentSpawnResult,
+  isInlineAgentSubagentSpawnCall,
+  parseInlineAgentSubagentSpawnPayload,
+  withInlineAgentSubagentSpawnDescriptor,
+} from "../core/inline-agent/subagent-tool";
+import type { DeepSeekSessionState } from "../core/inline-agent/pi/stream-fn-port";
+import {
   closeInterruptedTrace,
   type CloseInterruptedTraceOptions,
 } from "../core/inline-agent/trace-status";
@@ -151,6 +163,9 @@ import {
   createAgentStartingElement,
   appendAgentConsoleNotice,
   isInlineAgentBudgetFinalText,
+  createAgentChildConsole,
+  mountAgentChildConsole,
+  updateAgentChildConsoleStatus,
   type AgentConsolePhase,
 } from "../core/inline-agent/renderer";
 import { decideMidRunTurn, canAnchorFreshLoop } from "../core/inline-agent/mid-run-turn";
@@ -539,6 +554,36 @@ let inlineAgentStreamRenderFrame: number | null = null;
 let pendingInlineAgentStreamChunk: InlineAgentStreamChunkMsg | null = null;
 /** Reasoning deltas per step that arrived before the step's narration mounted. */
 const pendingAgentReasoningByStep = new Map<number, string>();
+
+// ---------------------------------------------------------------------------
+// P1 subagent live hierarchy (M5). Child inline-agent runs stream AGENT_*
+// events under their own namespaced loop id (`subagent:<parentLoopId>:<n>`);
+// the router below renders each child into a console nested under the parent
+// run's subagent_spawn tool row. All state here is owned by the parent run's
+// lifecycle and cleared by the same terminal/stop/teardown paths that own the
+// parent panel (constraint 3).
+// ---------------------------------------------------------------------------
+
+interface InlineAgentChildConsoleState {
+  container: HTMLElement;
+  stream: HTMLElement | null;
+  currentStep: HTMLElement | null;
+}
+
+/** Live child consoles keyed by the child's namespaced loop id. */
+const inlineAgentChildConsoles = new Map<string, InlineAgentChildConsoleState>();
+/**
+ * The detected-but-unclaimed subagent_spawn tool row of the current step
+ * (set by AGENT_TOOL_DETECTED on the parent loop, claimed by the spawn
+ * executor when that call starts executing).
+ */
+let pendingAgentSpawnRow: HTMLElement | null = null;
+/**
+ * The spawn tool row of the spawn call currently executing. Child events
+ * arriving while the spawn promise is in flight mount their console here.
+ * At most one spawn executes at a time (pi tool execution is sequential).
+ */
+let inlineAgentSpawningRow: HTMLElement | null = null;
 /**
  * Current-turn-only backend authority. It is never persisted: web sessions
  * delegate their completed final response to DeepSeek's real history renderer,
@@ -4551,7 +4596,15 @@ async function startInlineAgentIfNeeded(
       thinkingEnabled: complete.promptOptions.thinkingEnabled,
       refFileIds: complete.promptOptions.refFileIds,
     },
-    toolDescriptors: selectContinuableToolDescriptors(authorization.descriptors),
+    // P1 subagent (M5): the spawn tool rides the agent-run grant and this
+    // loop's model-facing descriptor set. It is NOT part of the shared prompt
+    // catalog — the background grant resolver merges the same descriptor for
+    // agent_run grants (single factory truth in core/inline-agent/
+    // subagent-tool.ts), and the engine's depth-1 filter excludes it from
+    // every child descriptor set.
+    toolDescriptors: withInlineAgentSubagentSpawnDescriptor(
+      selectContinuableToolDescriptors(authorization.descriptors),
+    ),
     locale: currentContentLocale,
     powWasmUrl: chrome.runtime.getURL(DEEPSEEK_POW_WASM_PATH),
   };
@@ -4663,6 +4716,235 @@ function startOwnedInlineAgentLoop(payload: InlineAgentStartPayload): void {
   void task.then(() => {
     pendingInlineAgentLoopTasks.delete(task);
   });
+}
+
+// ---------------------------------------------------------------------------
+// P1 subagent (M5): spawn execution through the loop's authorized path and
+// the live child-run renderer routing.
+// ---------------------------------------------------------------------------
+
+/**
+ * The parent's LIVE DS-web chain anchor (M5 wiring note 3). The loop adapter
+ * owns the session (`sessionRef` is the minimal read accessor); during a
+ * step's tool phase it has already advanced to that step's response id, which
+ * is exactly the message a child chain anchors to. The static payload anchor
+ * is the honest fallback (official-api parents ignore the page anchor
+ * anyway; the engine requires a number).
+ */
+function resolveInlineAgentChainAnchor(
+  sessionRef: { current: DeepSeekSessionState | null },
+  payload: InlineAgentStartPayload,
+): number {
+  return sessionRef.current?.parentMessageId ?? payload.parentMessageId;
+}
+
+/**
+ * Executes one subagent_spawn call through the per-run runner (M4 engine).
+ * The result mapping is the tool result the parent model sees: refusal
+ * `message`, outcome `error` / `finalText` (M4 wiring note 4). Never throws:
+ * the runner never rejects, and validation failures are structured results.
+ */
+async function executeInlineAgentSubagentSpawn(input: {
+  call: ToolCall;
+  runner: InlineAgentSubagentRunner | null;
+  chainParentMessageId: number;
+}): Promise<ToolExecutionRecord> {
+  const name = input.call.name;
+  if (!input.runner) {
+    const message = contentT("content.agent.subagentUnavailable");
+    return {
+      name,
+      result: {
+        ok: false,
+        summary: message,
+        error: { code: "subagent_unavailable", message, retryable: false },
+      },
+    };
+  }
+  const parsed = parseInlineAgentSubagentSpawnPayload(input.call.payload);
+  if (!parsed.ok) {
+    return {
+      name,
+      result: {
+        ok: false,
+        summary: parsed.message,
+        error: {
+          code: "subagent_payload_invalid",
+          message: parsed.message,
+          retryable: true,
+        },
+      },
+    };
+  }
+  const spawnResult = await input.runner.spawn({
+    payload: parsed.payload,
+    chainParentMessageId: input.chainParentMessageId,
+  });
+  const described = describeInlineAgentSubagentSpawnResult(
+    currentContentLocale,
+    spawnResult,
+  );
+  return {
+    name,
+    result: {
+      ok: described.ok,
+      // The child's final answer is first-class content for the parent model,
+      // bounded by the same residual cap as a run's own final answer.
+      summary: clampText(described.summary, INLINE_AGENT_FINAL_RENDER_MAX_CHARS) ?? "",
+      ...(described.detail ? { detail: described.detail } : {}),
+      ...(described.error ? { error: described.error } : {}),
+    },
+  };
+}
+
+/** Resets the child-console bookkeeping (owned by the parent run lifecycle). */
+function resetInlineAgentChildConsoleState(): void {
+  inlineAgentChildConsoles.clear();
+  pendingAgentSpawnRow = null;
+  inlineAgentSpawningRow = null;
+}
+
+/**
+ * Live AGENT_* events of a child run (forwarded by the M4 engine through the
+ * runner's `post` dependency). Child events reuse the locked AGENT_* protocol
+ * with the child's OWN namespaced loop id; the console mounts on the child's
+ * first event under the parent's currently-executing spawn tool row, then
+ * every primitive upserts inside that console by the child's step index.
+ */
+function handleInlineAgentChildLoopEvent(
+  parentLoopId: string,
+  type: string,
+  data: unknown,
+): void {
+  const msg = data as { loopId?: unknown; stepIndex?: unknown };
+  const childLoopId =
+    typeof msg?.loopId === "string" ? msg.loopId : "";
+  if (!childLoopId.startsWith(INLINE_AGENT_SUBAGENT_LOOP_ID_PREFIX)) return;
+  // The parent run is over (superseded/stopped/completed): ghost events of a
+  // detached child are dropped — the panel and the bookkeeping are gone.
+  if (inlineAgentLoopId !== parentLoopId) return;
+
+  const labels = getAgentRendererLabels();
+  const state = getOrMountInlineAgentChildConsole(childLoopId);
+  if (!state) return;
+  const stream = state.stream;
+  const stepIndex = typeof msg.stepIndex === "number" ? msg.stepIndex : 0;
+
+  switch (type) {
+    case "AGENT_STEP_STARTED": {
+      state.currentStep = createAgentStepElement(stepIndex);
+      updateAgentChildConsoleStatus(
+        state.container,
+        "running",
+        contentT("content.agent.subagentRunning", { step: stepIndex + 1 }),
+      );
+      break;
+    }
+    case "AGENT_STREAM_CHUNK": {
+      const chunk = data as InlineAgentStreamChunkMsg;
+      const step = state.currentStep;
+      if (!stream || !step) return;
+      const previousText = getInlineAgentStepText(step);
+      const nextText =
+        clampText(
+          getInlineAgentDisplayStepText(chunk.fullText, currentToolDescriptors) ||
+            previousText,
+          INLINE_AGENT_STEP_RENDER_MAX_CHARS,
+        ) ?? "";
+      if (nextText) mountAgentNarration(step, stream, labels);
+      updateStepStreamText(step, nextText);
+      break;
+    }
+    case "AGENT_REASONING_CHUNK": {
+      const chunk = data as InlineAgentReasoningChunkMsg;
+      const step = state.currentStep;
+      if (!stream || !step || !chunk.fullText) return;
+      if (step.parentElement === stream) {
+        const note = getAgentReasoningNote(step);
+        if (note) updateAgentReasoningNoteElement(note, chunk.fullText);
+      } else {
+        mountAgentNarration(step, stream, labels, chunk.fullText);
+      }
+      break;
+    }
+    case "AGENT_TOOL_DETECTED": {
+      const detected = data as InlineAgentToolDetectedMsg;
+      if (!stream || !state.currentStep) return;
+      addAgentToolEntry(stream, detected.stepIndex, detected.call, labels);
+      break;
+    }
+    case "AGENT_STEP_COMPLETE": {
+      const complete = data as InlineAgentStepCompleteMsg;
+      if (!stream) return;
+      for (const execution of complete.toolExecutions) {
+        resolveAgentToolEntry(stream, complete.stepIndex, execution, labels);
+      }
+      if (state.currentStep) updateStepStatus(state.currentStep, "complete");
+      state.currentStep = null;
+      break;
+    }
+    case "AGENT_LOOP_COMPLETE": {
+      const complete = data as InlineAgentLoopCompleteMsg;
+      updateAgentChildConsoleStatus(
+        state.container,
+        "complete",
+        contentT("content.agent.subagentComplete", {
+          steps: complete.totalSteps,
+          tools: complete.totalTools,
+        }),
+      );
+      if (stream) {
+        collapseAllAgentToolGroups(stream);
+        finalizePendingAgentToolEntries(stream);
+      }
+      inlineAgentChildConsoles.delete(childLoopId);
+      break;
+    }
+    case "AGENT_LOOP_ERROR": {
+      const failure = data as InlineAgentLoopErrorMsg;
+      updateAgentChildConsoleStatus(
+        state.container,
+        "error",
+        contentT("content.agent.subagentError", {
+          steps: failure.stepIndex,
+          tools: failure.totalTools,
+        }),
+      );
+      if (stream) finalizePendingAgentToolEntries(stream);
+      inlineAgentChildConsoles.delete(childLoopId);
+      break;
+    }
+    default:
+      break;
+  }
+}
+
+/**
+ * Returns the live console for a child loop, mounting it under the parent's
+ * currently-executing spawn tool row on the child's first event. Without a
+ * claimed spawn row there is no honest mount point (the spawn was refused, or
+ * the row never rendered) — the events are dropped and the child's persisted
+ * trace remains the run record. Never returns a console detached from the
+ * live parent panel.
+ */
+function getOrMountInlineAgentChildConsole(
+  childLoopId: string,
+): InlineAgentChildConsoleState | null {
+  const existing = inlineAgentChildConsoles.get(childLoopId);
+  if (existing) return existing;
+  if (!inlineAgentContainer || !inlineAgentSpawningRow) return null;
+  const container = createAgentChildConsole(
+    contentT("content.agent.subagentRunning", { step: 1 }),
+  );
+  mountAgentChildConsole(inlineAgentSpawningRow, container);
+  inlineAgentSpawningRow = null;
+  const state: InlineAgentChildConsoleState = {
+    container,
+    stream: getAgentConsoleBody(container),
+    currentStep: null,
+  };
+  inlineAgentChildConsoles.set(childLoopId, state);
+  return state;
 }
 
 /**
@@ -4848,6 +5130,7 @@ function teardownInlineAgentPanel(): void {
   flushPendingInlineAgentStreamRender();
   stopAgentConsoleTimer();
   pendingAgentReasoningByStep.clear();
+  resetInlineAgentChildConsoleState();
   if (inlineAgentContainer) {
     inlineAgentContainer.remove();
   }
@@ -4879,6 +5162,7 @@ function stopInlineAgent(
   // then detached once the aborted loop settles.
   flushPendingInlineAgentStreamRender();
   pendingAgentReasoningByStep.clear();
+  resetInlineAgentChildConsoleState();
   inlineAgentLoopId = null;
   inlineAgentContainer = null;
   inlineAgentCurrentStep = null;
@@ -4958,6 +5242,24 @@ async function startInlineAgentLoop(
   }
 
   const terminalTasks: Promise<boolean>[] = [];
+
+  let shouldReloadNativeHistory = false;
+
+  // M5 (wiring note 3): the loop adapter publishes its DS-web session here so
+  // the spawn executor reads the parent's LIVE chain anchor per spawn. One
+  // ref per run — created fresh with the run, never shared across runs.
+  const sessionRef: { current: DeepSeekSessionState | null } = { current: null };
+  // The loop's model-facing descriptor set: the parent's grant descriptors
+  // under the released native-search projection (spawn descriptor included —
+  // it is in the grant). The subagent engine derives each child's depth-1 set
+  // from the same list.
+  const loopToolDescriptors = [
+    ...projectToolDescriptorsForNativeSearch(
+      authorization.descriptors,
+      payload.promptOptions.searchEnabled,
+    ),
+  ];
+
   const post = (type: string, data: unknown) => {
     const terminalTask = handleInlineAgentLoopEvent(
       type,
@@ -4968,6 +5270,26 @@ async function startInlineAgentLoop(
   };
 
   const executeTool = async (call: ToolCall): Promise<ToolExecutionRecord> => {
+    // P1 subagent (M5): the spawn call resolves through the per-run runner
+    // created below with this loop's AbortSignal — same authorized executor
+    // path, no second execution route. The engine bounds the child by the
+    // released tool deadline itself (180s + teardown grace) and propagates
+    // this loop's abort, so racing it here again would only mask the child's
+    // structured outcome.
+    if (isInlineAgentSubagentSpawnCall(call)) {
+      const spawnRow = pendingAgentSpawnRow;
+      pendingAgentSpawnRow = null;
+      inlineAgentSpawningRow = spawnRow;
+      try {
+        return await executeInlineAgentSubagentSpawn({
+          call,
+          runner: subagentRunner,
+          chainParentMessageId: resolveInlineAgentChainAnchor(sessionRef, payload),
+        });
+      } finally {
+        inlineAgentSpawningRow = null;
+      }
+    }
     const enrichedCall: ToolCall = ensureToolCallId({
       ...call,
       source: {
@@ -5015,19 +5337,39 @@ async function startInlineAgentLoop(
     };
   };
 
-  let shouldReloadNativeHistory = false;
+  // M5: ONE subagent runner per parent run, wired with THIS run's abort
+  // signal (supersede/stop aborts propagate into every live child) and the
+  // loop's authorized executeTool closure (children never bypass it). Created
+  // before the loop starts and captured by the executeTool closure above.
+  const subagentRunner: InlineAgentSubagentRunner = createInlineAgentSubagentRunner({
+    parentTraceId: activeInlineAgentTrace?.id ?? payload.loopId,
+    parentLoopId: payload.loopId,
+    chatSessionId: payload.chatSessionId,
+    traceUrl: getToolBlockUrlForChatSession(payload.chatSessionId),
+    promptOptions: payload.promptOptions,
+    toolDescriptors: loopToolDescriptors,
+    executeTool,
+    signal: abort.signal,
+    // M5 renderer seam: live child events stream into the nested consoles.
+    post: (type, data) => {
+      handleInlineAgentChildLoopEvent(payload.loopId, type, data);
+    },
+    // Child trace rows ride the same persistence surface as the parent's
+    // (tracked writes + restore dedupe map).
+    upsertTrace: (trace) => writeInlineAgentTrace(trace),
+    locale: payload.locale,
+    powWasmUrl: payload.powWasmUrl,
+    modelBackend,
+    capabilityScopeRequestId,
+  });
+
   try {
     await runInlineAgentLoop(
       {
         ...payload,
-        toolDescriptors: [
-          ...projectToolDescriptorsForNativeSearch(
-            authorization.descriptors,
-            payload.promptOptions.searchEnabled,
-          ),
-        ],
+        toolDescriptors: loopToolDescriptors,
       },
-      { post, executeTool, signal: abort.signal },
+      { post, executeTool, signal: abort.signal, sessionRef },
     );
     if (terminalTasks.length > 0) {
       const terminalResults = await Promise.all(terminalTasks);
@@ -5039,6 +5381,8 @@ async function startInlineAgentLoop(
       activeAgentAbort = null;
       activeAgentModelBackend = null;
     }
+    pendingAgentSpawnRow = null;
+    inlineAgentSpawningRow = null;
   }
 
   // Reload only after the terminal trace write and authorization teardown have
@@ -5148,12 +5492,18 @@ function handleAgentToolDetected(msg: InlineAgentToolDetectedMsg): void {
   if (msg.loopId !== inlineAgentLoopId || !inlineAgentContainer) return;
   const stream = getAgentConsoleBody(inlineAgentContainer);
   if (stream && inlineAgentCurrentStep) {
-    addAgentToolEntry(
+    const row = addAgentToolEntry(
       stream,
       msg.stepIndex,
       msg.call,
       getAgentRendererLabels(),
     );
+    // P1 subagent: remember the spawn row so the child run's console mounts
+    // under it when the child's first live event arrives (the claim moves it
+    // to `inlineAgentSpawningRow` when the call starts executing).
+    if (isInlineAgentSubagentSpawnCall(msg.call)) {
+      pendingAgentSpawnRow = row;
+    }
   }
   agentRunningToolCount += 1;
   updateActiveInlineAgentTrace((trace) =>
@@ -5405,8 +5755,14 @@ async function handleAgentLoopComplete(
     const budgetPaused = isInlineAgentBudgetFinalText(msg.finalText, (count) =>
       contentT("content.agent.budgetReached", { count }),
     );
-    const completedSteps =
-      inlineAgentContainer.querySelectorAll(".dpp-agent-step");
+    // Direct stream children only: a nested child-run console carries its own
+    // `.dpp-agent-step` segments that are NOT parent narration (P1 subagent).
+    const parentStreamForSteps = getAgentConsoleBody(inlineAgentContainer);
+    const completedSteps: Element[] = parentStreamForSteps
+      ? Array.from(
+        parentStreamForSteps.querySelectorAll(":scope > .dpp-agent-step"),
+      )
+      : [];
     const lastCompletedStep = completedSteps[completedSteps.length - 1] as
       HTMLElement | undefined;
     const lastCompletedStepText = lastCompletedStep
@@ -5466,6 +5822,7 @@ async function handleAgentLoopComplete(
     // with the completed extension-owned answer instead of a blank screen.
     stopAgentConsoleTimer();
     pendingAgentReasoningByStep.clear();
+    resetInlineAgentChildConsoleState();
     inlineAgentLoopId = null;
     inlineAgentContainer = null;
     inlineAgentCurrentStep = null;
@@ -5574,6 +5931,7 @@ function handleAgentLoopError(msg: InlineAgentLoopErrorMsg): void {
     console.error("[DeepSeek++] handleAgentLoopError:", err);
   } finally {
     stopAgentConsoleTimer();
+    resetInlineAgentChildConsoleState();
     inlineAgentLoopId = null;
     inlineAgentContainer = null;
     inlineAgentCurrentStep = null;

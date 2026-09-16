@@ -540,10 +540,56 @@ export function injectInlineAgentStyles(): void {
     @keyframes dpp-agent-starting-spin {
       to { transform: rotate(360deg); }
     }
+    /* P1 subagent hierarchy: a child run's console nested inside the parent
+       run's subagent_spawn tool row — indented under the row, own status dot
+       and stream. Cleanup rides the panel lifecycle (the nested element dies
+       with the parent panel; no detached roots). */
+    .dpp-agent-child-console {
+      margin: 2px 0 4px;
+      padding-left: 12px;
+      border-left: 2px solid var(--dpp-ui-border);
+    }
+    .dpp-agent-child-status {
+      display: flex;
+      align-items: center;
+      gap: 6px;
+      padding: 2px 0;
+      font-size: 12px;
+      line-height: 1.5;
+      color: var(--dpp-ui-text-muted);
+    }
+    .dpp-agent-child-dot {
+      flex: none;
+      width: 7px;
+      height: 7px;
+      border-radius: 50%;
+      background: var(--dpp-ui-text-subtle);
+    }
+    .dpp-agent-child-console[data-child-phase="running"] .dpp-agent-child-dot {
+      background: var(--dpp-ui-accent);
+      animation: dpp-agent-console-pulse 1.1s ease-in-out infinite;
+    }
+    .dpp-agent-child-console[data-child-phase="complete"] .dpp-agent-child-dot {
+      background: var(--dpp-ui-success);
+    }
+    .dpp-agent-child-console[data-child-phase="error"] .dpp-agent-child-dot {
+      background: var(--dpp-ui-error);
+    }
+    .dpp-agent-child-title {
+      flex: 1;
+      min-width: 0;
+      overflow: hidden;
+      text-overflow: ellipsis;
+      white-space: nowrap;
+    }
+    .dpp-agent-child-console[data-child-phase="error"] .dpp-agent-child-title {
+      color: var(--dpp-ui-error);
+    }
     @media (prefers-reduced-motion: reduce) {
       .dpp-agent-starting::before,
       .dpp-agent-container[data-console-phase="starting"] .dpp-agent-status-dot,
       .dpp-agent-container[data-console-phase="running"] .dpp-agent-status-dot,
+      .dpp-agent-child-console[data-child-phase="running"] .dpp-agent-child-dot,
       .dpp-agent-tool-item[data-tool-status="pending"] .dpp-agent-tool-state-icon {
         animation: none;
       }
@@ -1194,7 +1240,10 @@ function createAgentToolGroup(stepIndex: number): HTMLElement {
 function updateAgentToolGroupCount(group: HTMLElement, labels?: Partial<InlineAgentRendererLabels>): void {
   const title = group.querySelector<HTMLElement>('.dpp-agent-tool-group-title');
   if (!title) return;
-  const count = group.querySelectorAll('.dpp-agent-tool-item').length;
+  // Direct item rows only: a nested child console (mounted inside a
+  // subagent_spawn row) carries its own tool rows that must never inflate the
+  // parent's work-log count.
+  const count = group.querySelectorAll(':scope > .dpp-agent-tool-group-items > .dpp-agent-tool-item').length;
   title.textContent = labels?.toolGroup?.(count) ?? `Tool calls (${count})`;
 }
 
@@ -1447,4 +1496,75 @@ export function isInlineAgentBudgetFinalText(
     if (text === budgetNoticeForCount(count)) return true;
   }
   return false;
+}
+
+// ---------------------------------------------------------------------------
+// P1 subagent hierarchy (M5): a child inline-agent run renders as its own
+// console NESTED under the parent run's `subagent_spawn` tool row. The child
+// console carries a `.dpp-agent-stream` body, so every existing stream
+// primitive (createAgentStepElement / mountAgentNarration /
+// addAgentToolEntry / resolveAgentToolEntry / updateStepStreamText with their
+// `data-step-index` upserts) works on it UNCHANGED, keyed by the child's own
+// loop id and step indexes. No new event types feed it — the same AGENT_*
+// protocol with the child's namespaced loopId.
+// ---------------------------------------------------------------------------
+export type AgentChildConsolePhase = 'running' | 'complete' | 'error';
+
+/**
+ * Creates a child-run console: a status row (phase dot + live status text)
+ * above the child's own stream body. The element is NOT attached — the
+ * caller mounts it under the parent's spawn tool row via
+ * {@link mountAgentChildConsole}.
+ */
+export function createAgentChildConsole(statusText: string): HTMLElement {
+  const child = document.createElement('div');
+  child.className = 'dpp-agent-child-console';
+  child.setAttribute('data-child-phase', 'running');
+
+  const statusLine = document.createElement('div');
+  statusLine.className = 'dpp-agent-child-status';
+
+  const dot = document.createElement('span');
+  dot.className = 'dpp-agent-child-dot';
+  dot.setAttribute('aria-hidden', 'true');
+
+  const title = document.createElement('span');
+  title.className = 'dpp-agent-child-title';
+  title.setAttribute('role', 'status');
+  title.setAttribute('aria-live', 'polite');
+  title.textContent = statusText;
+
+  statusLine.appendChild(dot);
+  statusLine.appendChild(title);
+
+  const stream = document.createElement('div');
+  stream.className = 'dpp-agent-stream';
+
+  child.appendChild(statusLine);
+  child.appendChild(stream);
+  return child;
+}
+
+/**
+ * Mounts a child console INSIDE the parent run's spawn tool row (below the
+ * row's toggle/summary), so the hierarchy reads as "this tool call produced
+ * this nested run" and every panel-lifecycle teardown (panel removal) takes
+ * the nested consoles with it.
+ */
+export function mountAgentChildConsole(toolRow: HTMLElement, childConsole: HTMLElement): void {
+  toolRow.appendChild(childConsole);
+}
+
+/**
+ * Updates the child console's phase and status text. Phases drive the dot
+ * color (running pulses, complete/error settle) via `data-child-phase`.
+ */
+export function updateAgentChildConsoleStatus(
+  childConsole: HTMLElement,
+  phase: AgentChildConsolePhase,
+  statusText: string,
+): void {
+  childConsole.setAttribute('data-child-phase', phase);
+  const title = childConsole.querySelector<HTMLElement>('.dpp-agent-child-title');
+  if (title) title.textContent = statusText;
 }

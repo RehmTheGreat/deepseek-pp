@@ -209,4 +209,57 @@ describe('parent and child trace status honesty with children in flight', () => 
       finalText: 'Child finished cleanly.',
     });
   });
+
+  it('M5 wiring: forwarding live child events never changes settlement honesty and reuses the locked protocol', async () => {
+    // The M5 renderer consumes child events through the runner's optional
+    // `post` forwarder. This pins the wiring contract the renderer relies on:
+    // forwarded events are the EXISTING AGENT_* protocol (no new event types),
+    // each carrying the child's OWN namespaced loopId, and wiring a forwarder
+    // never keeps a row (parent or child) non-terminal after abort.
+    vi.useFakeTimers();
+    adapterMocks.submitPromptStreaming.mockImplementation(
+      (_input: unknown, _handlers: unknown, signal: AbortSignal) => abortAwarePendingTurn(signal),
+    );
+    const forwarded: Array<{ type: string; data: Record<string, unknown> }> = [];
+    const { runner, store, controller } = createHarness({
+      post: (type: string, data: unknown) =>
+        forwarded.push({ type, data: data as Record<string, unknown> }),
+    });
+    const parent = parentTrace();
+    await store.upsert(parent);
+
+    const child = runner.spawn({ payload: { task: 'watched child' }, chainParentMessageId: 101 });
+    await vi.advanceTimersByTimeAsync(1);
+
+    expect(forwarded.length).toBeGreaterThan(0);
+    for (const event of forwarded) {
+      expect(AGENT_PROTOCOL_EVENT_TYPES.has(event.type)).toBe(true);
+      if (event.type !== 'AGENT_TOKEN_SPEED') {
+        expect(event.data.loopId).toBe('subagent:loop-parent:1');
+      }
+    }
+
+    controller.abort();
+    const childResult = await child;
+    await vi.advanceTimersByTimeAsync(1_000);
+    await store.upsert(closeInterruptedTrace(parent, 'stopped by user'));
+
+    expect(childResult).toMatchObject({ refused: false, status: 'stopping' });
+    for (const row of await store.read()) {
+      expect(row.status).not.toBe('running');
+      if (row.status === 'stopping') expect(row.error).toBeTruthy();
+    }
+  });
 });
+
+/** The locked AGENT_* page protocol surface (inline-agent-event-protocol-golden). */
+const AGENT_PROTOCOL_EVENT_TYPES = new Set([
+  'AGENT_STEP_STARTED',
+  'AGENT_STREAM_CHUNK',
+  'AGENT_REASONING_CHUNK',
+  'AGENT_TOKEN_SPEED',
+  'AGENT_TOOL_DETECTED',
+  'AGENT_STEP_COMPLETE',
+  'AGENT_LOOP_COMPLETE',
+  'AGENT_LOOP_ERROR',
+]);

@@ -66,6 +66,13 @@ import type { ToolDescriptor } from '../types';
 export const INLINE_AGENT_SUBAGENT_INVOCATION_NAME = 'subagent_spawn';
 
 /**
+ * Loop-id namespace of engine child runs (`subagent:<parentLoopId>:<n>`).
+ * Single truth for the id format: the engine builds child ids with it and the
+ * M5 renderer router in content.ts recognizes child events by it.
+ */
+export const INLINE_AGENT_SUBAGENT_LOOP_ID_PREFIX = 'subagent:';
+
+/**
  * Bounded wait for a child loop to settle after its abort fired before the
  * engine force-closes the trace and reports the structured failure (covers a
  * stranded tool handler that ignores the abort). The released tool deadline
@@ -164,6 +171,14 @@ export interface InlineAgentSubagentRunnerDeps {
    * `createInlineAgentTraceStore`); tests inject an in-memory store.
    */
   upsertTrace?: (trace: InlineAgentTraceRecord) => Promise<void>;
+  /**
+   * M5: optional live forwarder for the child's AGENT_* events (the renderer
+   * consumer lives in content.ts — AGENTS.md dormant-port rule: the port and
+   * its consumer ship together). Forwarding is additive; the engine's own
+   * trace recording and settlement are untouched, so the protocol bytes and
+   * the honesty contract are identical with and without a consumer.
+   */
+  post?: (type: string, data: unknown) => void;
   locale?: SupportedLocale;
   powWasmUrl?: string;
   /** Backend selection is the caller's authority (B2); the engine forwards it. */
@@ -241,7 +256,7 @@ export function createInlineAgentSubagentRunner(
     sequence: number,
   ): Promise<InlineAgentSubagentSpawnResult> {
     const childTraceId = `subagent:${deps.parentTraceId}:${sequence}`;
-    const childLoopId = `subagent:${deps.parentLoopId}:${sequence}`;
+    const childLoopId = `${INLINE_AGENT_SUBAGENT_LOOP_ID_PREFIX}${deps.parentLoopId}:${sequence}`;
     const task = request.payload.task;
 
     // Depth-1 descriptor set: spawn excluded, hint intersected (R5/R10).
@@ -377,7 +392,13 @@ export function createInlineAgentSubagentRunner(
       // The authoritative loop entry: a child IS a released inline-agent run.
       const loopDone: Promise<string | null> = runPiInlineAgentLoop({
         payload: buildChildPayload(request, childLoopId, toolDescriptors, task),
-        post: recordEvent,
+        // M5: the child's events feed the engine's trace recording first
+        // (settlement truth), then the optional renderer forwarder. The
+        // forwarder never influences settlement.
+        post: (type, data) => {
+          recordEvent(type, data);
+          deps.post?.(type, data);
+        },
         executeTool: deps.executeTool,
         signal: childAbort.signal,
       }).then(

@@ -5,6 +5,7 @@ import {
   appendAgentConsoleNotice,
   autoCollapseCompletedReasoningHost,
   collapseAllAgentToolGroups,
+  createAgentChildConsole,
   createAgentContainer,
   createAgentStartingElement,
   createAgentStepElement,
@@ -13,7 +14,9 @@ import {
   getAgentReasoningNote,
   injectInlineAgentStyles,
   isInlineAgentBudgetFinalText,
+  mountAgentChildConsole,
   mountAgentNarration,
+  updateAgentChildConsoleStatus,
   updateAgentReasoningNoteElement,
   renderAgentStreamText,
   resolveAgentToolEntry,
@@ -887,5 +890,143 @@ describe('inline agent renderer', () => {
     expect(notice).toBeNull();
     expect(bare.querySelector('.dpp-agent-notice')).toBeNull();
     expect(document.querySelector('.dpp-agent-notice')).toBeNull();
+  });
+});
+
+describe('inline agent renderer child-run hierarchy (P1 subagent, M5)', () => {
+  afterEach(() => {
+    document.head.innerHTML = '';
+    document.body.innerHTML = '';
+  });
+
+  /** Mounts the parent panel with a detected `subagent_spawn` tool row. */
+  function parentWithSpawnRow() {
+    const container = createAgentContainer();
+    const stream = getAgentConsoleBody(container);
+    if (!stream) throw new Error('parent stream missing');
+    document.body.appendChild(container);
+    const step = createAgentStepElement(0);
+    updateStepStreamText(step, 'spawning a subagent');
+    mountAgentNarration(step, stream);
+    const spawnRow = addAgentToolEntry(stream, 0, {
+      name: 'subagent_spawn',
+      payload: { task: 'child task' },
+    }, streamLabels);
+    return { container, stream, spawnRow };
+  }
+
+  it('nests a child console under the parent spawn tool row', () => {
+    const { container, stream, spawnRow } = parentWithSpawnRow();
+
+    const child = createAgentChildConsole('Subagent · step 1');
+    mountAgentChildConsole(spawnRow, child);
+
+    // Nested INSIDE the spawn tool row (hierarchy), never a sibling of the
+    // parent stream's own children.
+    expect(spawnRow.contains(child)).toBe(true);
+    expect(stream.querySelector(':scope > .dpp-agent-child-console')).toBeNull();
+    // The child console carries its own stream body so the existing stream
+    // primitives (data-step-index upserts) work on it unchanged.
+    const childStream = getAgentConsoleBody(child);
+    expect(childStream).not.toBeNull();
+    expect(childStream?.parentElement).toBe(child);
+    expect(container.contains(child)).toBe(true);
+  });
+
+  it('renders child step and tool events by their own data-step-index without disturbing parent rows', () => {
+    const { stream, spawnRow } = parentWithSpawnRow();
+
+    const childOne = createAgentChildConsole('Subagent · step 1');
+    mountAgentChildConsole(spawnRow, childOne);
+    const childOneStream = getAgentConsoleBody(childOne);
+    if (!childOneStream) throw new Error('child stream missing');
+
+    // Child events routed through the SAME primitives the live router uses.
+    const childStep = createAgentStepElement(0);
+    updateStepStreamText(childStep, 'child narration');
+    mountAgentNarration(childStep, childOneStream);
+    const childToolRow = addAgentToolEntry(childOneStream, 0, {
+      name: 'web_search',
+      payload: { query: 'child query' },
+    }, streamLabels);
+    resolveAgentToolEntry(childOneStream, 0, makeExecution('web_search', {
+      ok: true,
+      summary: 'child result',
+    }), streamLabels);
+
+    // Upsert keyed by the child's own step index inside the child stream.
+    expect(childOneStream.querySelector('.dpp-agent-step[data-step-index="0"]'))
+      .not.toBeNull();
+    expect(childOneStream.textContent).toContain('child narration');
+    expect(childToolRow.getAttribute('data-tool-status')).toBe('ok');
+
+    // The parent's rows are untouched by child rendering.
+    const parentStep = stream.querySelector(':scope > .dpp-agent-step');
+    expect(parentStep?.textContent).not.toContain('child narration');
+    const parentSpawnRow = stream.querySelector(
+      ':scope > .dpp-agent-tool-group .dpp-agent-tool-group-items > .dpp-agent-tool-item',
+    );
+    expect(parentSpawnRow?.textContent).toContain('subagent_spawn');
+    expect(parentSpawnRow?.getAttribute('data-tool-status')).toBe('pending');
+
+    // The group title counts DIRECT item rows only: the child rows nested
+    // inside the spawn row's console never inflate the parent's work log.
+    const parentGroup = stream.querySelector(':scope > .dpp-agent-tool-group');
+    expect(parentGroup?.querySelector('.dpp-agent-tool-group-title')?.textContent)
+      .toBe('Ran 1 tools');
+    addAgentToolEntry(stream, 1, { name: 'web_fetch', payload: { url: 'https://parent' } }, streamLabels);
+    expect(stream.querySelectorAll(':scope > .dpp-agent-tool-group > .dpp-agent-tool-group-items > .dpp-agent-tool-item'))
+      .toHaveLength(2);
+    expect(stream.querySelector(':scope > .dpp-agent-tool-group .dpp-agent-tool-group-title')?.textContent)
+      .toBe('Ran 2 tools');
+
+    // A second child gets its own console: child upserts never cross.
+    const rowTwo = addAgentToolEntry(stream, 0, {
+      name: 'subagent_spawn',
+      payload: { task: 'second child' },
+    }, streamLabels);
+    const childTwo = createAgentChildConsole('Subagent · step 1');
+    mountAgentChildConsole(rowTwo, childTwo);
+    const childTwoStream = getAgentConsoleBody(childTwo);
+    const secondStep = createAgentStepElement(0);
+    updateStepStreamText(secondStep, 'second child narration');
+    if (childTwoStream) mountAgentNarration(secondStep, childTwoStream);
+
+    expect(childOne.textContent).not.toContain('second child narration');
+    expect(childTwo.textContent).toContain('second child narration');
+  });
+
+  it('switches child console phases and cleans nested consoles up with the panel lifecycle', () => {
+    const { container, spawnRow } = parentWithSpawnRow();
+
+    const child = createAgentChildConsole('Subagent · step 1');
+    mountAgentChildConsole(spawnRow, child);
+    updateAgentChildConsoleStatus(child, 'running', 'Subagent · step 1');
+    expect(child.getAttribute('data-child-phase')).toBe('running');
+    expect(child.querySelector('.dpp-agent-child-title')?.textContent).toBe('Subagent · step 1');
+
+    updateAgentChildConsoleStatus(child, 'complete', 'Subagent complete · 2 steps · 1 tool calls');
+    expect(child.getAttribute('data-child-phase')).toBe('complete');
+    expect(child.querySelector('.dpp-agent-child-title')?.textContent)
+      .toContain('Subagent complete');
+
+    updateAgentChildConsoleStatus(child, 'error', 'Subagent failed');
+    expect(child.getAttribute('data-child-phase')).toBe('error');
+
+    // Panel teardown (the capability owning the DOM root removes it) takes the
+    // nested consoles with it — no leaked child roots.
+    expect(document.querySelectorAll('.dpp-agent-child-console')).toHaveLength(1);
+    container.remove();
+    expect(document.querySelectorAll('.dpp-agent-child-console')).toHaveLength(0);
+  });
+
+  it('ships the child console styles with the injected agent styles', () => {
+    injectInlineAgentStyles();
+    const css = document.getElementById('dpp-inline-agent-css')?.textContent ?? '';
+    expect(css).toContain('.dpp-agent-child-console');
+    expect(css).toContain('.dpp-agent-child-title');
+    expect(css).toContain('data-child-phase="running"');
+    expect(css).toContain('data-child-phase="error"');
+    expect(css).toContain('data-child-phase="complete"');
   });
 });
