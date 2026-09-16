@@ -31,14 +31,14 @@ import type { AgentMessage } from '@earendil-works/pi-agent-core';
 import type { StreamFn, AgentEvent, AgentLoopConfig } from '@earendil-works/pi-agent-core';
 import { runAgentLoop } from '@earendil-works/pi-agent-core';
 import { DEFAULT_LOCALE, translate, type SupportedLocale } from '../../i18n';
-import type { ToolCall, ToolDescriptor, ToolExecutionRecord, ToolProviderIdentity } from '../../types';
+import type { ToolCall, ToolDescriptor, ToolError, ToolExecutionRecord, ToolProviderIdentity } from '../../types';
 import { createClientHeaders } from '../../deepseek/adapter';
 import { getDeepSeekApiKey } from '../../chat/api-key';
 import { getOfficialApiChatConfig } from '../../chat/official-api-config';
 import { createDeepSeekTurnSubmitter, isDeepSeekInterruptedTurnError } from './deepseek-stream-fn';
 import { createDeepSeekWebProvider, deepSeekWebProviderToStreamFn } from './deepseek-web-provider';
 import { createDeepSeekApiProvider, createDeepSeekApiMessageMapper, deepSeekApiProviderToStreamFn } from './official-api-provider';
-import type { DeepSeekSessionState, DeepSeekStreamFnDeps } from './stream-fn-port';
+import type { DeepSeekSessionState, DeepSeekStreamFnDeps, DeepSeekToolCallMapper } from './stream-fn-port';
 import {
   createPiAgentTools,
   createPiLoopBudgetMap,
@@ -203,17 +203,23 @@ export async function runPiInlineAgentLoop(deps: PiLoopAdapterDeps): Promise<voi
   // path keeps the released semantics byte-for-byte (golden); the
   // official-api path is a peer backend over the same pi loop.
   let requestCount = 0;
-  const mapToolCall = (call: { name: string; invocationName: string; payload: Record<string, unknown> }, index: number) => ({
-    type: 'toolCall' as const,
-    // XML indexes restart at zero for every model response. A single inline
-    // run intentionally reuses one background authorization grant, so the raw
-    // `xml:${index}` id made the first tool in turn 2 look like a replay of the
-    // first tool in turn 1. Bind the id to the model-request sequence while
-    // keeping it stable for any parsing/retry inside that same request.
-    id: `turn:${requestCount}:xml:${index}`,
-    name: call.invocationName,
-    arguments: call.payload,
-  });
+  const mapToolCall: DeepSeekToolCallMapper = (call, index) => {
+    const block = {
+      type: 'toolCall' as const,
+      // XML indexes restart at zero for every model response. A single inline
+      // run intentionally reuses one background authorization grant, so the raw
+      // `xml:${index}` id made the first tool in turn 2 look like a replay of
+      // the first tool in turn 1. Bind the id to the model-request sequence
+      // while keeping it stable for any parsing/retry inside that same request.
+      id: `turn:${requestCount}:xml:${index}`,
+      name: call.invocationName,
+      arguments: call.payload,
+    };
+    // P0.2 completion: a recovered parseError rides on the emitted block so
+    // beforeToolCall can deliver the batch-path feedback to the model. Clean
+    // calls keep the released shape byte-for-byte (no parseError property).
+    return call.parseError ? { ...block, parseError: call.parseError } : block;
+  };
 
   let streamFn: StreamFn;
   let model: Model<Api>;
@@ -408,7 +414,7 @@ export async function runPiInlineAgentLoop(deps: PiLoopAdapterDeps): Promise<voi
       }
       return [];
     },
-    beforeToolCall: async ({ context }) => {
+    beforeToolCall: async ({ context, toolCall }) => {
       if (!hasContinuableChain()) {
         return { block: true, reason: chainErrorText(nudge.currentTurnIsNudge) };
       }
@@ -417,6 +423,17 @@ export async function runPiInlineAgentLoop(deps: PiLoopAdapterDeps): Promise<voi
       // message (the model actually produced a turn before tools run).
       if (backend === 'official-api' && !contextHasAssistantMessage(context)) {
         return { block: true, reason: chainErrorText(nudge.currentTurnIsNudge) };
+      }
+      // P0.2 completion: a recovered parseError on the emitted block
+      // (delimiter correction, mismatched close, incomplete) must reach the
+      // model's feedback loop exactly like the batch path — the call never
+      // executes and the reason becomes the error tool result.
+      const parseError = (toolCall as { parseError?: ToolError }).parseError;
+      if (parseError) {
+        return {
+          block: true,
+          reason: `${translate(locale, 'tool.runtime.invalidFormat')} [${parseError.code}] ${parseError.message}`,
+        };
       }
       return undefined;
     },

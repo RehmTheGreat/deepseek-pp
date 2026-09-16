@@ -202,10 +202,10 @@ export function createDeepSeekStreamFn(deps: DeepSeekStreamFnDeps): StreamFn {
 
         const onParsed = (parsed: { completed: CoreToolCall[]; failed: CoreToolCall[] }) => {
           for (const call of parsed.completed) {
-            emitToolCall({ name: call.name, invocationName: call.invocationName ?? call.name, payload: call.payload });
+            emitToolCall({ name: call.name, invocationName: call.invocationName ?? call.name, payload: call.payload, parseError: call.parseError });
           }
           for (const call of parsed.failed) {
-            emitToolCall({ name: call.name, invocationName: call.invocationName ?? call.name, payload: call.payload });
+            emitToolCall({ name: call.name, invocationName: call.invocationName ?? call.name, payload: call.payload, parseError: call.parseError });
           }
         };
 
@@ -257,9 +257,10 @@ export function createDeepSeekStreamFn(deps: DeepSeekStreamFnDeps): StreamFn {
         // - toolCallCount > 0: the streaming parser already emitted every XML
         //   call it could recover (completed or failed), so the fallback is
         //   restricted to LEGACY ｜DSML｜ blocks only. Full extraction here
-        //   would re-emit an XML call the streaming parser already produced,
-        //   and mapToolCall drops parseError, so the duplicate copy would
-        //   carry the batch best-effort payload and could execute.
+        //   would re-emit an XML call the streaming parser already produced.
+        // Recovered parseErrors (delimiter correction, mismatched close,
+        // incomplete) ride on the emitted records so the loop's feedback
+        // delivers them to the model exactly like the batch path.
         if (!fallbackRawTruncated && fallbackRawText) {
           const shouldFallback = fallbackRawText.includes('｜DSML｜')
             || (toolCallCount === 0 && fallbackRawText.includes('<'));
@@ -268,7 +269,7 @@ export function createDeepSeekStreamFn(deps: DeepSeekStreamFnDeps): StreamFn {
               ? extractToolCalls(fallbackRawText, { descriptors: toolDescriptors })
               : extractLegacyToolCalls(fallbackRawText, { descriptors: toolDescriptors });
             for (const call of fallbackCalls) {
-              emitToolCall({ name: call.name, invocationName: call.invocationName ?? call.name, payload: call.payload });
+              emitToolCall({ name: call.name, invocationName: call.invocationName ?? call.name, payload: call.payload, parseError: call.parseError });
             }
           }
         }

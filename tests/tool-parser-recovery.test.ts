@@ -198,8 +198,8 @@ describe('streaming mismatched-close recovery', () => {
   // Dedupe invariant (deepseek-stream-fn.ts), scoped per branch: the XML leg
   // of the fallback is gated on toolCallCount === 0, and with toolCallCount > 0
   // the fallback is restricted to LEGACY ｜DSML｜ blocks (extractLegacyToolCalls)
-  // so a recovered call is never re-emitted — mapToolCall drops parseError, so
-  // a duplicate copy would carry a best-effort payload and could execute.
+  // so a recovered call is never re-emitted — a duplicate copy would double-
+  // count the call and double-report its parseError feedback to the model.
   it('streaming recovery bumps toolCallCount so the XML fallback leg cannot fire', () => {
     const raw = '<artifact_create>{"filename":"a.txt"}</invoke><artifact_create>{"filename":"b.txt","content":"x"}</artifact_create>';
     const parser = createStreamingToolCallParser(descriptors);

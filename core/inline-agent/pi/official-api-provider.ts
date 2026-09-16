@@ -48,7 +48,7 @@ import { submitOfficialDeepSeekStreaming } from '../../deepseek/official-api';
 import type { OfficialDeepSeekMessage } from '../../deepseek/official-api';
 import { createStreamingToolCallParser } from '../../interceptor/streaming-tool-call-parser';
 import { createStreamingToolTextAccumulator } from '../../interceptor/streaming-tool-text';
-import type { ToolCall as CoreToolCall } from '../../types';
+import type { ToolCall as CoreToolCall, ToolError } from '../../types';
 import type { ToolDescriptor } from '../../types';
 import {
   DEEPSEEK_API,
@@ -61,11 +61,17 @@ export interface DeepSeekApiProviderOptions {
   /** Tool descriptors used to parse XML tool calls out of the text stream. */
   toolDescriptors: readonly ToolDescriptor[];
   /** Maps a parsed XML tool call to the pi ToolCall shape (like the web path). */
-  mapToolCall: (call: { name: string; invocationName: string; payload: Record<string, unknown> }, index: number) => {
+  mapToolCall: (call: {
+    name: string;
+    invocationName: string;
+    payload: Record<string, unknown>;
+    parseError?: ToolError;
+  }, index: number) => {
     type: 'toolCall';
     id: string;
     name: string;
     arguments: Record<string, unknown>;
+    parseError?: ToolError;
   };
 }
 
@@ -182,7 +188,7 @@ export function createDeepSeekApiStreamFn(
           emit({ type: 'thinking_delta', contentIndex: thinkingContentIndex, delta, partial: snapshot() });
         };
 
-        const emitToolCall = (parsed: { name: string; invocationName: string; payload: Record<string, unknown> }) => {
+        const emitToolCall = (parsed: { name: string; invocationName: string; payload: Record<string, unknown>; parseError?: ToolError }) => {
           const toolCall = mapToolCall(parsed, toolCallCount);
           toolCallCount += 1;
           const contentIndex = partial.content.length;
@@ -194,10 +200,10 @@ export function createDeepSeekApiStreamFn(
 
         const onParsed = (parsed: { completed: CoreToolCall[]; failed: CoreToolCall[] }) => {
           for (const call of parsed.completed) {
-            emitToolCall({ name: call.name, invocationName: call.invocationName ?? call.name, payload: call.payload });
+            emitToolCall({ name: call.name, invocationName: call.invocationName ?? call.name, payload: call.payload, parseError: call.parseError });
           }
           for (const call of parsed.failed) {
-            emitToolCall({ name: call.name, invocationName: call.invocationName ?? call.name, payload: call.payload });
+            emitToolCall({ name: call.name, invocationName: call.invocationName ?? call.name, payload: call.payload, parseError: call.parseError });
           }
         };
 

@@ -21,7 +21,7 @@
  */
 import type { StreamFn } from '@earendil-works/pi-agent-core';
 import type { Context, ToolCall } from '@earendil-works/pi-ai';
-import type { ToolDescriptor } from '../../types';
+import type { ToolDescriptor, ToolError } from '../../types';
 import type { ResponseTokenSpeedPayload } from '../../deepseek/stream-metrics';
 
 /** One DS-web turn request — the serializable wire contract. */
@@ -92,14 +92,23 @@ export interface ParsedXmlToolCall {
   name: string;
   invocationName: string;
   payload: Record<string, unknown>;
+  /**
+   * Parse feedback recovered with the call (`tool_call_delimiter_corrected`,
+   * `tool_call_close_mismatched`, `tool_call_incomplete`); undefined for clean
+   * calls. Carried on the emitted toolCall block so the loop's feedback
+   * delivers it to the model exactly like the batch path (P0.2 completion).
+   */
+  parseError?: ToolError;
 }
 
 /**
  * Maps one parsed XML tool call (from the DS text stream) to the pi ToolCall
  * shape. `index` is the zero-based position within the turn, used to
- * synthesize the required stable `id` when the XML block carries none.
+ * synthesize the required stable `id` when the XML block carries none. A
+ * recovered `parseError` rides on the emitted block; mappers must omit the
+ * property entirely for clean calls.
  */
-export type DeepSeekToolCallMapper = (call: ParsedXmlToolCall, index: number) => ToolCall;
+export type DeepSeekToolCallMapper = (call: ParsedXmlToolCall, index: number) => ToolCall & { parseError?: ToolError };
 
 /** Per-run DS-web turn defaults (from the loop adapter's prompt options). */
 export interface DeepSeekTurnDefaults {

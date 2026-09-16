@@ -261,6 +261,48 @@ describe('createDeepSeekStreamFn', () => {
     }
   });
 
+  it('hands the recovered parseError of fallback-extracted calls to the tool-call mapper', async () => {
+    // P0.2 completion (pc directive: no errors or nuances ignored): the
+    // fallback leg must not silently drop the recovered call's parseError
+    // (tool_call_delimiter_corrected, mismatched, incomplete) — the mapper
+    // receives it so the loop can deliver the same feedback the batch path
+    // delivers. The 8c8ddc1 scoping is untouched: this asserts what the
+    // emitted record CARRIES, not when the fallback fires.
+    const corrupted = [
+      '<｜｜DSML｜tool_calls>',
+      '<｜｜DSML｜invoke name="artifact_create">',
+      '<｜｜DSML｜parameter name="filename" string="true">legacy.txt</｜｜DSML｜parameter>',
+      '</｜｜DSML｜invoke>',
+      '</｜｜DSML｜tool_calls>',
+    ].join('');
+    adapterMocks.submitPromptStreaming.mockImplementationOnce(async (_input, handlers) => {
+      handlers.onTextChunk(corrupted);
+      return turnResult();
+    });
+
+    const mappedCalls: Array<{ parseError?: { code: string; message: string; retryable: boolean } }> = [];
+    const deps = createDeps({
+      mapToolCall: (call, index) => {
+        mappedCalls.push(call);
+        return {
+          type: 'toolCall' as const,
+          id: `xml:${index}`,
+          name: call.invocationName,
+          arguments: call.payload,
+        };
+      },
+    });
+    const events = await collectEvents(deps);
+
+    expect(mappedCalls).toHaveLength(1);
+    expect(mappedCalls[0].parseError).toMatchObject({
+      code: 'tool_call_delimiter_corrected',
+      retryable: false,
+    });
+    expect(mappedCalls[0].parseError?.message).toContain('｜｜DSML｜');
+    expect(events.at(-1)?.type).toBe('done');
+  });
+
   it('builds the turn request from session, serializer and turn defaults', async () => {
     adapterMocks.submitPromptStreaming.mockImplementationOnce(async (_input, handlers) => {
       handlers.onTextChunk('ok');

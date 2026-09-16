@@ -942,3 +942,74 @@ const ARTIFACT_EXECUTION: ToolExecutionRecord = {
     summary: 'Artifact created',
   },
 };
+
+// P0.2 completion (pc directive: no errors or nuances ignored): a fallback-
+// recovered call whose parseError was previously dropped must NEVER execute —
+// the loop blocks it in beforeToolCall and the model receives the parse
+// feedback as the error tool result, exactly like the batch path.
+describe('runInlineAgentLoop recovered-call parseError feedback (P0.2 completion)', () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+    adapterMocks.createPowHeaders.mockResolvedValue({ 'X-DS-PoW-Response': 'pow-1' });
+  });
+
+  afterEach(() => {
+    vi.useRealTimers();
+  });
+
+  it('blocks a delimiter-corrected call and surfaces the parseError as the tool feedback', async () => {
+    vi.useFakeTimers();
+    // Payload is schema-valid on purpose: schema validation failure would
+    // otherwise preempt beforeToolCall with its own error. This isolates the
+    // parseError delivery contract under test.
+    const corruptedBlock = [
+      '<｜｜DSML｜tool_calls>',
+      '<｜｜DSML｜invoke name="artifact_create">',
+      '<｜｜DSML｜parameter name="filename" string="true">legacy.txt</｜｜DSML｜parameter>',
+      '<｜｜DSML｜parameter name="content" string="true">ok</｜｜DSML｜parameter>',
+      '</｜｜DSML｜invoke>',
+      '</｜｜DSML｜tool_calls>',
+    ].join('');
+    adapterMocks.submitPromptStreaming
+      .mockImplementationOnce(async (_input, handlers) => {
+        handlers.onTextChunk(corruptedBlock);
+        return { assistantText: '', responseMessageId: 102, requestMessageId: 101, finished: true };
+      })
+      .mockImplementationOnce(async (_input, handlers) => {
+        handlers.onTextChunk('Understood, re-emitting with correct delimiters.');
+        return { assistantText: '', responseMessageId: 103, requestMessageId: 102, finished: true };
+      });
+
+    const post = vi.fn();
+    const executeTool = vi.fn(async () => ({
+      name: 'artifact_create',
+      provider: { kind: 'local' as const, id: 'artifact', displayName: 'Artifact', transport: 'in_process' as const },
+      result: { ok: true, summary: 'Artifact created' },
+    }));
+
+    const run = runInlineAgentLoop(
+      { ...createPayload(), toolDescriptors: createArtifactToolDescriptors('en') },
+      { post, executeTool, signal: new AbortController().signal },
+    );
+    await vi.advanceTimersByTimeAsync(7_000);
+    await run;
+
+    // The recovered call never reaches execution...
+    expect(executeTool).not.toHaveBeenCalled();
+    // ...and the model sees the parseError feedback as the error tool result.
+    // AGENT_STEP_COMPLETE carries raw ToolExecutionRecords (ok/summary under
+    // `result`, like AGENTS.md's released record surface).
+    const stepComplete = post.mock.calls
+      .map(([type, data]) => ({ type, data: data as { toolExecutions?: Array<{ name: string; result: { ok: boolean; summary: string } }> } }))
+      .find(({ type, data }) => type === 'AGENT_STEP_COMPLETE' && (data.toolExecutions?.length ?? 0) > 0);
+    expect(stepComplete).toBeDefined();
+    expect(stepComplete?.data.toolExecutions?.[0]).toMatchObject({
+      name: 'artifact_create',
+      result: {
+        ok: false,
+        summary: expect.stringContaining('tool_call_delimiter_corrected'),
+      },
+    });
+    expect(stepComplete?.data.toolExecutions?.[0]?.result.summary).toContain('｜｜DSML｜');
+  });
+});
