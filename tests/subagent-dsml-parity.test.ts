@@ -85,8 +85,6 @@ const XML_TOOL_CALL = '<artifact_create>{"filename":"a.txt","content":"ok"}</art
 // Legacy single-bar DSML wire form (｜DSML｜, U+FF5C once): the parser surface
 // inherited from runPiInlineAgentLoop must treat it EXACTLY like the taught
 // XML form in child runs (R9: pinned by test, not assumed).
-// inherited from runPiInlineAgentLoop must treat it EXACTLY like the taught
-// XML form in child runs (R9: pinned by test, not assumed).
 const DSML_TOOL_CALL = [
   '<｜DSML｜tool_calls>',
   '<｜DSML｜invoke name="artifact_create">',

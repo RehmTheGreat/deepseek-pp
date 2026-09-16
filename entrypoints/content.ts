@@ -4974,11 +4974,15 @@ function getOrMountInlineAgentChildConsole(
   const existing = inlineAgentChildConsoles.get(childLoopId);
   if (existing) return existing;
   if (!inlineAgentContainer || !inlineAgentSpawningRow) return null;
+  const claimedRow = inlineAgentSpawningRow;
   const container = createAgentChildConsole(
     contentT("content.agent.subagentRunning", { step: 1 }),
   );
-  mountAgentChildConsole(inlineAgentSpawningRow, container);
-  inlineAgentSpawningRow = null;
+  mountAgentChildConsole(claimedRow, container);
+  // Supersede guard (final review): only clear the slot if THIS child still
+  // owns it — a stale child's first event arriving inside the teardown grace
+  // after a fresh loop claimed the slot must not null the fresh claim.
+  if (inlineAgentSpawningRow === claimedRow) inlineAgentSpawningRow = null;
   const state: InlineAgentChildConsoleState = {
     container,
     stream: getAgentConsoleBody(container),
@@ -5340,7 +5344,11 @@ async function startInlineAgentLoop(
           },
         });
       } finally {
-        inlineAgentSpawningRow = null;
+        // Supersede guard (final review): only clear the slot if THIS spawn
+        // still owns it — a stale run's executor settling inside the teardown
+        // grace after a fresh loop claimed the slot must not null the fresh
+        // claim (the fresh child's console would fail to mount).
+        if (inlineAgentSpawningRow === spawnRow) inlineAgentSpawningRow = null;
       }
     }
     const enrichedCall: ToolCall = ensureToolCallId({

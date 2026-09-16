@@ -554,7 +554,6 @@ function awaitSettledOrGrace(
   signal: AbortSignal,
 ): Promise<boolean> {
   return new Promise<boolean>((resolve) => {
-    let settled = false;
     let graceTimer: ReturnType<typeof setTimeout> | null = null;
     let finished = false;
     const finish = (value: boolean) => {
@@ -566,7 +565,7 @@ function awaitSettledOrGrace(
     };
     const onAbort = () => {
       if (finished) return;
-      graceTimer = setTimeout(() => finish(settled), INLINE_AGENT_SUBAGENT_TEARDOWN_GRACE_MS);
+      graceTimer = setTimeout(() => finish(false), INLINE_AGENT_SUBAGENT_TEARDOWN_GRACE_MS);
     };
     if (signal.aborted) onAbort();
     else signal.addEventListener('abort', onAbort, { once: true });

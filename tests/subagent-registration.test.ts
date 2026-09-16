@@ -305,6 +305,39 @@ describe('M5 wiring seams (source contracts, content entrypoint pattern)', () =>
     expect(contentSource).toContain('pendingAgentSpawnRows.shift()');
   });
 
+  it('guards the spawn-row slot clears against supersede clobber (final review fix 1)', () => {
+    // The spawning-row slot is module-level: a stale run's executor (or a
+    // stale child's first console mount) settling inside the teardown grace
+    // AFTER a fresh loop claimed the slot must not null the fresh claim.
+    // Both race-prone clears must compare the slot against the row they own
+    // before clearing; the parent-run lifecycle reset stays bare on purpose
+    // (it wipes ALL child-console bookkeeping for the run together).
+    expect(contentSource).toMatch(
+      /if \(inlineAgentSpawningRow === spawnRow\) inlineAgentSpawningRow = null;/,
+    );
+    expect(contentSource).toMatch(
+      /if \(inlineAgentSpawningRow === claimedRow\) inlineAgentSpawningRow = null;/,
+    );
+    // No bare unconditional clear outside the lifecycle reset: strip the
+    // guarded lines first so the guarded form cannot trip the negative scan.
+    const stripped = contentSource.replace(
+      /^\s*if \(inlineAgentSpawningRow === \w+\) inlineAgentSpawningRow = null;.*$/gm,
+      '',
+    );
+    const bareClearLines = stripped
+      .split('\n')
+      .filter((line) => line.includes('inlineAgentSpawningRow = null;'));
+    expect(bareClearLines).toHaveLength(1);
+    const resetBody =
+      contentSource.split('function resetInlineAgentChildConsoleState')[1]?.split('\n}')[0] ?? '';
+    expect(resetBody).toContain('inlineAgentSpawningRow = null;');
+    expect(bareClearLines[0]).toBe(
+      resetBody
+        .split('\n')
+        .find((line) => line.includes('inlineAgentSpawningRow = null;')),
+    );
+  });
+
   it('binds spawn calls to request identity and claims the id BEFORE runner.spawn (review fix 2)', () => {
     const executorBlock =
       contentSource.split('async function executeInlineAgentSubagentSpawn')[1] ?? '';
