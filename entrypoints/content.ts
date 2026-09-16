@@ -84,6 +84,7 @@ import {
   type InlineAgentSubagentRunner,
 } from "../core/inline-agent/subagent";
 import {
+  claimInlineAgentSubagentSpawnCall,
   describeInlineAgentSubagentSpawnResult,
   isInlineAgentSubagentSpawnCall,
   parseInlineAgentSubagentSpawnPayload,
@@ -573,11 +574,12 @@ interface InlineAgentChildConsoleState {
 /** Live child consoles keyed by the child's namespaced loop id. */
 const inlineAgentChildConsoles = new Map<string, InlineAgentChildConsoleState>();
 /**
- * The detected-but-unclaimed subagent_spawn tool row of the current step
- * (set by AGENT_TOOL_DETECTED on the parent loop, claimed by the spawn
- * executor when that call starts executing).
+ * Detected-but-unclaimed subagent_spawn tool rows in call order (review fix
+ * 1: a FIFO array, never a single slot — two spawns detected in one step
+ * must each keep their own row). pi executes calls sequentially in the same
+ * order, so the executor's shift() maps every child to ITS OWN row.
  */
-let pendingAgentSpawnRow: HTMLElement | null = null;
+const pendingAgentSpawnRows: HTMLElement[] = [];
 /**
  * The spawn tool row of the spawn call currently executing. Child events
  * arriving while the spawn promise is in flight mount their console here.
@@ -4743,11 +4745,23 @@ function resolveInlineAgentChainAnchor(
  * The result mapping is the tool result the parent model sees: refusal
  * `message`, outcome `error` / `finalText` (M4 wiring note 4). Never throws:
  * the runner never rejects, and validation failures are structured results.
+ *
+ * Review fix 2: the call first gets the SAME request identity every loop
+ * tool carries (`ensureToolCallId` + the grant-bound `agent_run` source),
+ * then its stable id claims one child run from the per-run claim set before
+ * `runner.spawn` — a replayed or identity-less call id is refused with a
+ * structured result instead of executing a second child.
  */
 async function executeInlineAgentSubagentSpawn(input: {
   call: ToolCall;
   runner: InlineAgentSubagentRunner | null;
   chainParentMessageId: number;
+  claimedSpawnCallIds: Set<string>;
+  callIdentity: {
+    capabilityScopeRequestId: string;
+    chatSessionId: string;
+    runId: string;
+  };
 }): Promise<ToolExecutionRecord> {
   const name = input.call.name;
   if (!input.runner) {
@@ -4776,6 +4790,33 @@ async function executeInlineAgentSubagentSpawn(input: {
       },
     };
   }
+  const enrichedCall: ToolCall = ensureToolCallId({
+    ...input.call,
+    source: {
+      trigger: "agent_run",
+      requestId: input.callIdentity.capabilityScopeRequestId,
+      chatSessionId: input.callIdentity.chatSessionId,
+      runId: input.callIdentity.runId,
+    },
+  });
+  const claim = claimInlineAgentSubagentSpawnCall(
+    input.claimedSpawnCallIds,
+    enrichedCall.id ?? "",
+  );
+  if (!claim.ok) {
+    return {
+      name,
+      result: {
+        ok: false,
+        summary: claim.message,
+        error: {
+          code: "subagent_call_replayed",
+          message: claim.message,
+          retryable: false,
+        },
+      },
+    };
+  }
   const spawnResult = await input.runner.spawn({
     payload: parsed.payload,
     chainParentMessageId: input.chainParentMessageId,
@@ -4800,7 +4841,7 @@ async function executeInlineAgentSubagentSpawn(input: {
 /** Resets the child-console bookkeeping (owned by the parent run lifecycle). */
 function resetInlineAgentChildConsoleState(): void {
   inlineAgentChildConsoles.clear();
-  pendingAgentSpawnRow = null;
+  pendingAgentSpawnRows.length = 0;
   inlineAgentSpawningRow = null;
 }
 
@@ -5249,6 +5290,10 @@ async function startInlineAgentLoop(
   // the spawn executor reads the parent's LIVE chain anchor per spawn. One
   // ref per run — created fresh with the run, never shared across runs.
   const sessionRef: { current: DeepSeekSessionState | null } = { current: null };
+  // Review fix 2: per-run one-time claim set for spawn call ids (the in-page
+  // analog of the background one-time call reservation — each stable call id
+  // executes at most one child run). Per-run state, never shared.
+  const claimedSpawnCallIds = new Set<string>();
   // The loop's model-facing descriptor set: the parent's grant descriptors
   // under the released native-search projection (spawn descriptor included —
   // it is in the grant). The subagent engine derives each child's depth-1 set
@@ -5277,14 +5322,22 @@ async function startInlineAgentLoop(
     // this loop's abort, so racing it here again would only mask the child's
     // structured outcome.
     if (isInlineAgentSubagentSpawnCall(call)) {
-      const spawnRow = pendingAgentSpawnRow;
-      pendingAgentSpawnRow = null;
+      // FIFO claim (review fix 1): detections and pi's sequential executions
+      // share the call order, so each spawn call maps to its OWN detected
+      // tool row — two spawns in one step never share a slot.
+      const spawnRow = pendingAgentSpawnRows.shift() ?? null;
       inlineAgentSpawningRow = spawnRow;
       try {
         return await executeInlineAgentSubagentSpawn({
           call,
           runner: subagentRunner,
           chainParentMessageId: resolveInlineAgentChainAnchor(sessionRef, payload),
+          claimedSpawnCallIds,
+          callIdentity: {
+            capabilityScopeRequestId,
+            chatSessionId: payload.chatSessionId,
+            runId: payload.loopId,
+          },
         });
       } finally {
         inlineAgentSpawningRow = null;
@@ -5381,8 +5434,12 @@ async function startInlineAgentLoop(
       activeAgentAbort = null;
       activeAgentModelBackend = null;
     }
-    pendingAgentSpawnRow = null;
-    inlineAgentSpawningRow = null;
+    // Review-fix hygiene: the loop run has settled, so every child-console
+    // bookkeeping row (live map + both spawn-row slots) is released here even
+    // when the loop settles without its own terminal event. Idempotent after
+    // the terminal handlers; ghost child events afterwards are dropped by the
+    // router's run guard.
+    resetInlineAgentChildConsoleState();
   }
 
   // Reload only after the terminal trace write and authorization teardown have
@@ -5500,9 +5557,11 @@ function handleAgentToolDetected(msg: InlineAgentToolDetectedMsg): void {
     );
     // P1 subagent: remember the spawn row so the child run's console mounts
     // under it when the child's first live event arrives (the claim moves it
-    // to `inlineAgentSpawningRow` when the call starts executing).
+    // to `inlineAgentSpawningRow` when the call starts executing). FIFO:
+    // detections and sequential executions share the call order, so row N
+    // belongs to spawn call N.
     if (isInlineAgentSubagentSpawnCall(msg.call)) {
-      pendingAgentSpawnRow = row;
+      pendingAgentSpawnRows.push(row);
     }
   }
   agentRunningToolCount += 1;

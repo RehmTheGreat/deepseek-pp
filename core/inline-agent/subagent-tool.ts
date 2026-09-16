@@ -157,6 +157,40 @@ export function parseInlineAgentSubagentSpawnPayload(
   };
 }
 
+export type InlineAgentSubagentSpawnCallClaimResult =
+  | { ok: true; callId: string }
+  | { ok: false; message: string };
+
+/**
+ * One-time per-run claim on a spawn call's stable id (review fix 2: the
+ * in-page analog of the background one-time call reservation). The executor
+ * derives the call identity (`ensureToolCallId` + the grant-bound source)
+ * and claims its id here BEFORE starting a child run; a replayed or
+ * identity-less call id is refused with a structured, model-visible reason
+ * instead of executing a second child under the same identity. The messages
+ * are model-facing wire feedback, like the parse refusals above.
+ */
+export function claimInlineAgentSubagentSpawnCall(
+  claimedCallIds: Set<string>,
+  callId: string,
+): InlineAgentSubagentSpawnCallClaimResult {
+  if (!callId) {
+    return {
+      ok: false,
+      message:
+        'subagent_spawn cannot run without a stable call id; resend the request so the call is re-detected with identity.',
+    };
+  }
+  if (claimedCallIds.has(callId)) {
+    return {
+      ok: false,
+      message: `subagent_spawn call ${callId} was already executed in this run; each spawn call id claims exactly one subagent run. Emit a NEW subagent_spawn call if another subagent is needed.`,
+    };
+  }
+  claimedCallIds.add(callId);
+  return { ok: true, callId };
+}
+
 /** Pure mapping of a spawn result onto the tool-result surface (M4 note 4). */
 export interface InlineAgentSubagentSpawnResultText {
   ok: boolean;

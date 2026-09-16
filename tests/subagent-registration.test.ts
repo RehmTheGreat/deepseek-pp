@@ -5,6 +5,7 @@ import {
   isInlineAgentSubagentSpawnCall,
   parseInlineAgentSubagentSpawnPayload,
   describeInlineAgentSubagentSpawnResult,
+  claimInlineAgentSubagentSpawnCall,
 } from '../core/inline-agent/subagent-tool';
 import { deriveChildToolDescriptors } from '../core/inline-agent/subagent';
 import { translate } from '../core/i18n/background';
@@ -162,6 +163,36 @@ describe('subagent spawn payload parsing (fail-closed, model-visible)', () => {
   });
 });
 
+describe('spawn call identity claiming (one-time per-run claim, review fix 2)', () => {
+  it('claims a call id exactly once and refuses a replayed id with the id in the message', () => {
+    const claimed = new Set<string>();
+    expect(claimInlineAgentSubagentSpawnCall(claimed, 'call-1')).toEqual({
+      ok: true,
+      callId: 'call-1',
+    });
+
+    const replay = claimInlineAgentSubagentSpawnCall(claimed, 'call-1');
+    expect(replay.ok).toBe(false);
+    if (!replay.ok) expect(replay.message).toContain('call-1');
+    // The refused replay did not double-claim.
+    expect(claimed.size).toBe(1);
+
+    expect(claimInlineAgentSubagentSpawnCall(claimed, 'call-2')).toEqual({
+      ok: true,
+      callId: 'call-2',
+    });
+    expect(claimed.size).toBe(2);
+  });
+
+  it('fails closed on a missing call id without mutating the claim set', () => {
+    const claimed = new Set<string>();
+    const result = claimInlineAgentSubagentSpawnCall(claimed, '');
+    expect(result.ok).toBe(false);
+    if (!result.ok) expect(result.message.length).toBeGreaterThan(0);
+    expect(claimed.size).toBe(0);
+  });
+});
+
 describe('spawn result to tool-result mapping (M4 wiring note 4)', () => {
   it('maps a refusal to a failed result carrying the model-visible message', () => {
     const described = describeInlineAgentSubagentSpawnResult('en', {
@@ -263,6 +294,28 @@ describe('M5 wiring seams (source contracts, content entrypoint pattern)', () =>
   it('routes spawn calls through the runner inside the authorized executeTool closure', () => {
     expect(contentSource).toContain('isInlineAgentSubagentSpawnCall(call)');
     expect(contentSource).toContain('runner.spawn(');
+  });
+
+  it('maps detected spawn rows FIFO so two spawns in one step keep their own rows (review fix 1)', () => {
+    // Detection collects rows in call order; the executor claims them in the
+    // SAME order pi executes calls (sequential). A single overwritten slot
+    // would mis-map the first child and drop the second.
+    expect(contentSource).toMatch(/const pendingAgentSpawnRows: HTMLElement\[\] = \[\]/);
+    expect(contentSource).toContain('pendingAgentSpawnRows.push(row)');
+    expect(contentSource).toContain('pendingAgentSpawnRows.shift()');
+  });
+
+  it('binds spawn calls to request identity and claims the id BEFORE runner.spawn (review fix 2)', () => {
+    const executorBlock =
+      contentSource.split('async function executeInlineAgentSubagentSpawn')[1] ?? '';
+    expect(executorBlock).toContain('ensureToolCallId(');
+    expect(executorBlock).toContain('"agent_run"');
+    const claimIndex = executorBlock.indexOf('claimInlineAgentSubagentSpawnCall(');
+    const spawnIndex = executorBlock.indexOf('runner.spawn(');
+    expect(claimIndex).toBeGreaterThan(-1);
+    expect(spawnIndex).toBeGreaterThan(claimIndex);
+    // The claim set is per-run state owned by startInlineAgentLoop.
+    expect(contentSource).toMatch(/const claimedSpawnCallIds = new Set<string>\(\)/);
   });
 
   it('reads the live chain anchor through the minimal sessionRef accessor', () => {
