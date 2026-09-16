@@ -153,7 +153,7 @@ import {
   isInlineAgentBudgetFinalText,
   type AgentConsolePhase,
 } from "../core/inline-agent/renderer";
-import { decideMidRunTurn } from "../core/inline-agent/mid-run-turn";
+import { decideMidRunTurn, canAnchorFreshLoop } from "../core/inline-agent/mid-run-turn";
 import { renderInlineMarkdown } from "../core/inline-agent/markdown";
 import {
   createTranslator,
@@ -4500,19 +4500,16 @@ async function startInlineAgentIfNeeded(
       loopRunning: true,
       // Internal loop turns already returned via isInlineAgentResponseComplete.
       isAgentOwnTurn: false,
-      hasFreshLoopAnchor:
-        complete.chatSessionId !== null && complete.assistantMessageId !== null,
+      // Single anchor authority (review finding 1): the SAME predicate as the
+      // fresh-start bail guard below, so a blank-but-non-null session id can
+      // never supersede (kill) the running loop and then start nothing.
+      hasFreshLoopAnchor: canAnchorFreshLoop(complete),
       hasTurnAuthorization:
         complete.requestId !== "" &&
         activeToolAuthorizations.has(complete.requestId),
     });
     if (decision.action === "refuse") {
-      if (inlineAgentContainer) {
-        appendAgentConsoleNotice(
-          inlineAgentContainer,
-          contentT("content.agent.midRunRefused"),
-        );
-      }
+      refuseMidRunUserTurn(contentT("content.agent.midRunRefused"));
       return;
     }
     if (decision.action === "supersede") {
@@ -4527,7 +4524,7 @@ async function startInlineAgentIfNeeded(
   // text is the new task (the loop's tool descriptors stay available).
   const continuableExecutions = selectContinuableToolExecutions(executions);
   if (continuableExecutions.length === 0 && !superseding) return;
-  if (!complete.chatSessionId || complete.assistantMessageId == null) return;
+  if (!canAnchorFreshLoop(complete)) return;
 
   const loopId = crypto.randomUUID();
   const authorization = complete.requestId
@@ -4666,6 +4663,57 @@ function startOwnedInlineAgentLoop(payload: InlineAgentStartPayload): void {
   void task.then(() => {
     pendingInlineAgentLoopTasks.delete(task);
   });
+}
+
+/**
+ * Renders the P0.1 mandated VISIBLE refusal of a mid-run user turn that
+ * cannot anchor a fresh loop (ruling R1 fallback). The refusal is persistent
+ * and must never silently vanish, so the notice targets the first AVAILABLE
+ * agent surface: the live panel reference when it is still connected to the
+ * document, else any connected non-restored agent console (the panel can be
+ * mounted-but-unreferenced in loop-startup/terminal windows, where
+ * `isInlineAgentRunning()` is true while the module reference is not set).
+ * When no agent surface exists at all, the reason falls back to a persistent
+ * page-level notice — the refusal never auto-hides and is never dropped.
+ */
+function refuseMidRunUserTurn(reason: string): void {
+  const connectedAgentContainers = document.querySelectorAll<HTMLElement>(
+    ".dpp-agent-container:not([data-restored])",
+  );
+  const targets: (HTMLElement | null)[] = [
+    inlineAgentContainer?.isConnected ? inlineAgentContainer : null,
+    connectedAgentContainers[0] ?? null,
+  ];
+  for (const container of targets) {
+    if (container && appendAgentConsoleNotice(container, reason)) return;
+  }
+  showPersistentContentNotice(reason);
+}
+
+/**
+ * Persistent page-level status notice (last resort of
+ * {@link refuseMidRunUserTurn}): same surface and styling as the content
+ * toast, but no auto-hide timer — the mandated acknowledgment stays visible
+ * until a future notice replaces it.
+ */
+function showPersistentContentNotice(message: string): void {
+  injectContentToastStyles();
+  let notice = document.querySelector<HTMLElement>(`.${CONTENT_TOAST_CLASS}`);
+  if (!notice) {
+    notice = document.createElement("div");
+    notice.className = CONTENT_TOAST_CLASS;
+    notice.setAttribute("role", "status");
+    document.body.appendChild(notice);
+  }
+  // Take ownership of the shared notice element: a pending auto-hide timer
+  // from an earlier transient toast must not hide this persistent one.
+  if (contentToastTimer) {
+    clearTimeout(contentToastTimer);
+    contentToastTimer = null;
+  }
+  notice.textContent = message;
+  notice.dataset.tone = "warning";
+  notice.dataset.visible = "true";
 }
 
 function isInlineAgentResponseComplete(

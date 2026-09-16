@@ -1,6 +1,9 @@
 import { readFileSync } from 'node:fs';
 import { describe, expect, it } from 'vitest';
-import { decideMidRunTurn } from '../core/inline-agent/mid-run-turn';
+import {
+  canAnchorFreshLoop,
+  decideMidRunTurn,
+} from '../core/inline-agent/mid-run-turn';
 import { closeInterruptedTrace } from '../core/inline-agent/trace-status';
 import type { InlineAgentTraceRecord } from '../core/inline-agent/types';
 import { translate } from '../core/i18n';
@@ -142,12 +145,42 @@ describe('supersede acknowledgment strings are i18n-backed (en + zh-CN)', () => 
   });
 });
 
+describe('canAnchorFreshLoop (single anchor authority, review finding 1)', () => {
+  it('treats a blank-but-non-null session id as absent — never a supersede anchor', () => {
+    // The producer passes "" through (typeof check), and the codebase
+    // convention treats blank session ids as absent. A turn with
+    // chat_session_id: "" must take the VISIBLE-refuse branch, never kill the
+    // running loop and then bail at the fresh-start guard.
+    expect(canAnchorFreshLoop({ chatSessionId: '', assistantMessageId: 10 })).toBe(false);
+  });
+
+  it('refuses null identifiers', () => {
+    expect(canAnchorFreshLoop({ chatSessionId: null, assistantMessageId: 10 })).toBe(false);
+    expect(canAnchorFreshLoop({ chatSessionId: 'session-1', assistantMessageId: null })).toBe(false);
+    expect(canAnchorFreshLoop({ chatSessionId: null, assistantMessageId: null })).toBe(false);
+  });
+
+  it('accepts a real session and message id (0 is a legal message id)', () => {
+    expect(canAnchorFreshLoop({ chatSessionId: 'session-1', assistantMessageId: 0 })).toBe(true);
+    expect(canAnchorFreshLoop({ chatSessionId: 'session-1', assistantMessageId: 10 })).toBe(true);
+  });
+});
+
 describe('content-script wiring of the supersede path (source contract)', () => {
   const contentSource = readFileSync('entrypoints/content.ts', 'utf8');
 
   it('routes mid-run turns through the extracted decision instead of the silent guard toast', () => {
     expect(contentSource).toContain('decideMidRunTurn({');
     expect(contentSource).not.toContain('content.agent.concurrencyGuard');
+  });
+
+  it('uses one anchor authority for the supersede decision AND the fresh-start bail guard', () => {
+    // Review finding 1: the decision's anchor predicate must not disagree
+    // with the tail guard — a falsy-but-non-null chatSessionId would kill the
+    // old run and then start nothing. Both sites evaluate the same type-guard
+    // helper (which also narrows the payload fields downstream).
+    expect(contentSource).toContain('hasFreshLoopAnchor: canAnchorFreshLoop(complete)');
+    expect(contentSource).toContain('if (!canAnchorFreshLoop(complete)) return;');
   });
 
   it('aborts the old loop through the existing stop path carrying the supersede reason', () => {
@@ -163,8 +196,13 @@ describe('content-script wiring of the supersede path (source contract)', () => 
     expect(contentSource.match(/startOwnedInlineAgentLoop\(payload\)/g)?.length).toBe(1);
   });
 
-  it('renders the refusal persistently in the running panel, not as a transient toast', () => {
-    expect(contentSource).toContain('appendAgentConsoleNotice(');
+  it('renders the refusal persistently even when the live panel reference is unmounted', () => {
+    // Review finding 2: the refusal must not silently vanish when
+    // inlineAgentContainer is null/detached — the wired helper falls back to
+    // any connected agent console and finally to a persistent page notice.
+    expect(contentSource).toContain('refuseMidRunUserTurn(');
+    expect(contentSource).toContain('.dpp-agent-container:not([data-restored])');
+    expect(contentSource).toContain('showPersistentContentNotice(');
     expect(contentSource).toContain('content.agent.midRunRefused');
   });
 });

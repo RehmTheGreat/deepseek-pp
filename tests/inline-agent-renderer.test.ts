@@ -870,10 +870,22 @@ describe('inline agent renderer', () => {
     const notice = appendAgentConsoleNotice(container, 'This message cannot take over the running agent.');
     const stream = getAgentConsoleBody(container);
     expect(stream?.contains(notice)).toBe(true);
-    expect(notice.className).toBe('dpp-agent-notice');
-    expect(notice.getAttribute('role')).toBe('status');
-    expect(notice.textContent).toBe('This message cannot take over the running agent.');
+    expect(notice?.className).toBe('dpp-agent-notice');
+    expect(notice?.getAttribute('role')).toBe('status');
+    expect(notice?.textContent).toBe('This message cannot take over the running agent.');
     // Persistent surface: a styled element in the panel, not an auto-hiding toast.
-    expect(notice.tagName).toBe('DIV');
+    expect(notice?.tagName).toBe('DIV');
+  });
+
+  it('reports failure instead of returning an orphaned notice when the container has no stream', () => {
+    // Review finding 2: a container without a console body (unmounted/detached
+    // host) must yield null so the caller can fall back — never a detached
+    // element that silently renders nowhere.
+    const bare = document.createElement('div');
+    document.body.appendChild(bare);
+    const notice = appendAgentConsoleNotice(bare, 'unreachable');
+    expect(notice).toBeNull();
+    expect(bare.querySelector('.dpp-agent-notice')).toBeNull();
+    expect(document.querySelector('.dpp-agent-notice')).toBeNull();
   });
 });

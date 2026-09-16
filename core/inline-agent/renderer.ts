@@ -1406,17 +1406,21 @@ export function createAgentStartingElement(labels?: Partial<InlineAgentRendererL
  * to the agent console stream. Unlike a toast, the notice lives inside the
  * panel for the panel's lifetime, so an acknowledged-but-refused user action
  * stays visible instead of vanishing after a few seconds.
+ *
+ * Returns the notice element, or null when the container has no console body
+ * (detached/unmounted host): callers must fall back to another visible
+ * surface instead of silently dropping the mandated acknowledgment — no
+ * orphaned, rendered-nowhere element is ever returned.
  */
-export function appendAgentConsoleNotice(container: HTMLElement, text: string): HTMLElement {
+export function appendAgentConsoleNotice(container: HTMLElement, text: string): HTMLElement | null {
+  const stream = getAgentConsoleBody(container);
+  if (!stream) return null;
   const notice = document.createElement('div');
   notice.className = 'dpp-agent-notice';
   notice.setAttribute('role', 'status');
   notice.textContent = text;
-  const stream = getAgentConsoleBody(container);
-  if (stream) {
-    stream.appendChild(notice);
-    followAgentStreamBottom(stream);
-  }
+  stream.appendChild(notice);
+  followAgentStreamBottom(stream);
   return notice;
 }
 

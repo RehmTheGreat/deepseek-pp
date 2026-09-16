@@ -55,3 +55,31 @@ export function decideMidRunTurn(input: MidRunTurnInput): MidRunTurnDecision {
   }
   return { action: 'refuse' };
 }
+
+/** The anchor identifiers a fresh inline-agent loop requires on a turn. */
+export interface InlineAgentLoopAnchor {
+  chatSessionId: string;
+  assistantMessageId: number;
+}
+
+/**
+ * THE anchor predicate for starting a fresh inline-agent loop off a
+ * RESPONSE_COMPLETE turn, and a type guard: passing it narrows the turn's
+ * `chatSessionId`/`assistantMessageId` to the non-null anchor shape, so the
+ * fresh-start bail guard and the payload construction share one authority —
+ * the supersede decision and the guard can never disagree.
+ *
+ * Semantics mirror the released fresh-start guard exactly
+ * (`!chatSessionId || assistantMessageId == null`): the request producer
+ * passes blank `""` session ids through (`typeof === "string"`), and the
+ * codebase convention treats a blank session id as ABSENT. Evaluating a
+ * blank-but-non-null session id as present would let a mid-run turn supersede
+ * (kill) the running loop and then bail at the fresh-start guard — the exact
+ * silent loss P0.1 removes. `0` is a legal message id, so only `null`
+ * disqualifies it.
+ */
+export function canAnchorFreshLoop<
+  T extends { chatSessionId: string | null; assistantMessageId: number | null },
+>(turn: T): turn is T & InlineAgentLoopAnchor {
+  return !!turn.chatSessionId && turn.assistantMessageId !== null;
+}
