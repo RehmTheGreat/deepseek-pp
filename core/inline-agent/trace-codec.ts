@@ -45,6 +45,10 @@ function decodeTrace(value: unknown, path: string): InlineAgentTraceRecord {
   requireFiniteNumber(trace.anchorMessageId, `${path}.anchorMessageId`);
   requireOptionalNullableFiniteNumber(trace.anchorMessageIndex, `${path}.anchorMessageIndex`);
   requireOptionalString(trace.anchorContent, `${path}.anchorContent`);
+  // Optional parent link of a subagent child run (P1): absent stays absent,
+  // present must be a string. Explicit validation keeps the record type
+  // honest at the storage boundary (null is corrupt data, not "parentless").
+  requireOptionalString(trace.parentTraceId, `${path}.parentTraceId`);
   requireString(trace.url, `${path}.url`);
   requireString(trace.originalPrompt, `${path}.originalPrompt`);
   requireString(trace.agentTaskPrompt, `${path}.agentTaskPrompt`);

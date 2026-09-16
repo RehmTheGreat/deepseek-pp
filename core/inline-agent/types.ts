@@ -72,6 +72,17 @@ export interface InlineAgentTraceRecord {
   anchorMessageId: number;
   anchorMessageIndex?: number | null;
   anchorContent?: string;
+  /**
+   * Parent inline-agent trace when this record is a subagent child run
+   * (P1 subagent feature); `undefined` means "parentless". OPTIONAL NULLABLE
+   * by decision (the single approved storage addition, constraint 1):
+   * no key/name/shape/migration change — the field rides on rows in the
+   * EXISTING `dpp_inline_agent_traces` key, existing readers already tolerate
+   * unknown fields, old code ignores it, and new code treats undefined as
+   * parentless. Backward compatible in both directions; enables hierarchy
+   * rendering and parent-status honesty accounting with zero migration cost.
+   */
+  parentTraceId?: string;
   url: string;
   originalPrompt: string;
   agentTaskPrompt: string;
@@ -135,6 +146,18 @@ export interface InlineAgentLoopErrorMsg {
   error: string;
 }
 
+/**
+ * Structured payload of the subagent-spawn preset tool (P1, decided design):
+ * what a parent inline-agent run passes when spawning one child run. The
+ * task text is required; the tool allowlist is an advisory HINT only — the
+ * child's executable descriptor set is derived by the engine (subagent-spawn
+ * itself excluded, depth 1), never taken verbatim from the model.
+ */
+export interface InlineAgentSubagentSpawnPayload {
+  task: string;
+  toolAllowlistHint?: string[];
+}
+
 export const INLINE_AGENT_MAX_STEPS = 25;
 export const INLINE_AGENT_MAX_NUDGES = 8;
 // Auto-resume budget (fix/v1.14.1-tool-loop): after an interrupted turn
@@ -151,3 +174,13 @@ export const INLINE_AGENT_STEP_TIMEOUT_MS = 120_000;
 export const INLINE_AGENT_TOOL_CALL_TIMEOUT_MS = 180_000;
 export const INLINE_AGENT_REQUEST_DELAY_MIN_MS = 2_500;
 export const INLINE_AGENT_REQUEST_DELAY_MAX_MS = 6_500;
+// Subagent caps (P1, decided design): depth is fixed at 1 level (children
+// never spawn grandchildren). CONCURRENT bounds how many child runs may be
+// live at once per parent run; PER_RUN bounds the total spawns across the
+// whole parent run. Overflow REFUSES with a structured tool error the model
+// sees — no queue. Values are configurable constants following the
+// INLINE_AGENT_MAX_RESUMES pattern; enforcement lands with the child-run
+// engine (M4).
+export const INLINE_AGENT_SUBAGENT_MAX_CONCURRENT = 2;
+export const INLINE_AGENT_SUBAGENT_MAX_PER_RUN = 6;
+export const INLINE_AGENT_SUBAGENT_MAX_DEPTH = 1;
