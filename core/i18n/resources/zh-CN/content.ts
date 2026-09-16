@@ -108,7 +108,8 @@ export const content = {
     codeRunning: '运行中…',
     codeRunFailed: '运行失败',
     codeRunnerUnavailable: '代码运行器不可用',
-    concurrencyGuard: 'Agent 正在执行中，已忽略此消息触发的重复任务。如需中断，请点击 Agent 面板的「停止」。',
+    superseded: '已被新消息取代：此任务已停止，新的 Agent 任务正在处理你的新消息。',
+    midRunRefused: 'Agent 正在执行中，且此消息无法为其启动新的 Agent 任务。如需重定向，请先点击 Agent 面板中的「停止」，再重新发送消息。',
   },
   permission: {
     webFetch: 'DeepSeek++ 需要访问 {origin} 的权限以获取该页面内容',

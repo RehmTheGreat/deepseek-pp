@@ -675,6 +675,63 @@ describe('runInlineAgentLoop', () => {
     expect(post).not.toHaveBeenCalledWith('AGENT_LOOP_ERROR', expect.anything());
   });
 
+  it('never fires the auto-resume of a stream-cut loop once it is superseded (aborted)', async () => {
+    // P0.1 supersede (ruling R1): the site cut the in-flight stream after the
+    // user sent a message, and the loop parked in the resume window to revive
+    // the OLD task. Superseding aborts the loop's signal through the existing
+    // stop path; the resumed turn must never run: the run ends silently, no
+    // AGENT_LOOP_ERROR, and AGENT_STEP_STARTED is never re-posted for the old
+    // task. Any post-abort submit attempt dies with the aborted signal, like
+    // the real PoW gate's abort forwarding.
+    vi.useFakeTimers();
+    const controller = new AbortController();
+    adapterMocks.submitPromptStreaming
+      .mockImplementationOnce(async (_input, handlers) => {
+        handlers.onTextChunk('让我再抓取那篇详尽的文章，获取完整数据。');
+        return {
+          assistantText: '',
+          responseMessageId: 102,
+          requestMessageId: 101,
+          finished: false, // server cut: stream ended without FINISHED
+        };
+      })
+      .mockImplementation((_input, _handlers, signal) =>
+        abortAwarePendingTurn(signal));
+
+    const post = vi.fn();
+    const executeTool = vi.fn();
+
+    const run = runInlineAgentLoop(createPayload(), {
+      post,
+      executeTool,
+      signal: controller.signal,
+    });
+    await vi.advanceTimersByTimeAsync(1_000); // interrupted turn classified; the resumed run parked in its pacing wait
+    controller.abort(); // supersede: existing stop path aborts the loop
+    await vi.advanceTimersByTimeAsync(60_000);
+    await run;
+    const submitsAfterSettle = adapterMocks.submitPromptStreaming.mock.calls.length;
+    await vi.advanceTimersByTimeAsync(60_000);
+
+    // Silent terminal: no error, and the loop is truly over — settling
+    // produced no further model requests.
+    expect(post).toHaveBeenCalledWith('AGENT_LOOP_COMPLETE', expect.objectContaining({
+      finalText: '',
+    }));
+    expect(post).not.toHaveBeenCalledWith('AGENT_LOOP_ERROR', expect.anything());
+    expect(adapterMocks.submitPromptStreaming.mock.calls.length).toBe(submitsAfterSettle);
+    // The resumed turn of the OLD task never runs: no step ever completed, no
+    // tool executed, and the only streamed text is the interrupted turn's own
+    // partial output. (The resumed run's turn_start may re-post STEP_STARTED
+    // before the abort lands — that race is gated downstream by loopId; the
+    // resurrection invariant here is that it never produces live work.)
+    expect(post.mock.calls.filter(([type]) => type === 'AGENT_STEP_COMPLETE')).toHaveLength(0);
+    expect(executeTool).not.toHaveBeenCalled();
+    const streamChunks = post.mock.calls.filter(([type]) => type === 'AGENT_STREAM_CHUNK');
+    expect(streamChunks).toHaveLength(1);
+    expect((streamChunks[0][1] as { fullText: string }).fullText).toContain('让我再抓取那篇详尽的文章');
+  });
+
   it('resumes an interruption after a completed tool step without double execution', async () => {
     // Tools of a COMPLETED step are committed (STEP_COMPLETE posted); an
     // interrupted follow-up turn resumes the chain and must not re-run them.

@@ -149,9 +149,11 @@ import {
   getAgentConsoleBody,
   updateAgentConsoleHeader,
   createAgentStartingElement,
+  appendAgentConsoleNotice,
   isInlineAgentBudgetFinalText,
   type AgentConsolePhase,
 } from "../core/inline-agent/renderer";
+import { decideMidRunTurn } from "../core/inline-agent/mid-run-turn";
 import { renderInlineMarkdown } from "../core/inline-agent/markdown";
 import {
   createTranslator,
@@ -4483,21 +4485,48 @@ async function startInlineAgentIfNeeded(
 ): Promise<void> {
   if (isInlineAgentResponseComplete(complete)) return;
 
-  // Concurrency guard (issue #298): if an inline agent loop is already running
-  // for this conversation, do NOT start a second one off a user-initiated turn
-  // (e.g. a "continue" prompt because the long-running agent looked stuck).
-  // Starting a second loop previously left two agent panels racing in the DOM.
-  // Continuation turns are produced by the agent loop itself and are already
-  // handled by isInlineAgentResponseComplete above.
+  // Mid-run user turn (P0.1 supersede, ruling R1): a real user turn arriving
+  // while an inline-agent loop runs is never silently swallowed. When it can
+  // anchor a fresh loop it SUPERSEDES the running one — the old loop is
+  // aborted through the existing stop path with the supersede reason (honest
+  // terminal trace status; the in-flight-only auto-resume can never resurrect
+  // an aborted loop) and the fresh loop below starts on THIS turn's text,
+  // built through the existing initial-prompt bytes only. A turn that cannot
+  // anchor a fresh loop (missing session/message identifiers or authorization
+  // grant) is visibly refused persistently in the running panel instead.
+  let superseding = false;
   if (isInlineAgentRunning()) {
-    showContentToast(contentT("content.agent.concurrencyGuard"), "warning");
-    return;
+    const decision = decideMidRunTurn({
+      loopRunning: true,
+      // Internal loop turns already returned via isInlineAgentResponseComplete.
+      isAgentOwnTurn: false,
+      hasFreshLoopAnchor:
+        complete.chatSessionId !== null && complete.assistantMessageId !== null,
+      hasTurnAuthorization:
+        complete.requestId !== "" &&
+        activeToolAuthorizations.has(complete.requestId),
+    });
+    if (decision.action === "refuse") {
+      if (inlineAgentContainer) {
+        appendAgentConsoleNotice(
+          inlineAgentContainer,
+          contentT("content.agent.midRunRefused"),
+        );
+      }
+      return;
+    }
+    if (decision.action === "supersede") {
+      superseding = true;
+      stopInlineAgent(contentT("content.agent.superseded"));
+    }
   }
 
   // Collect executions that should trigger a continuation:
-  // MCP tools + local web and browser-control tools.
+  // MCP tools + local web and browser-control tools. A superseding user turn
+  // starts its fresh loop even with no continuable executions: the user's
+  // text is the new task (the loop's tool descriptors stay available).
   const continuableExecutions = selectContinuableToolExecutions(executions);
-  if (continuableExecutions.length === 0) return;
+  if (continuableExecutions.length === 0 && !superseding) return;
   if (!complete.chatSessionId || complete.assistantMessageId == null) return;
 
   const loopId = crypto.randomUUID();
@@ -4742,10 +4771,9 @@ function findInlineAgentLiveTarget(
 
 /**
  * True when an inline agent loop is mid-flight (an AbortController exists and
- * has not been aborted). Used by the concurrency guard in
- * {@link startInlineAgentIfNeeded} to skip launching a duplicate loop when the
- * user sends a follow-up message while a previous agent is still running
- * (issue #298).
+ * has not been aborted). Used by {@link startInlineAgentIfNeeded} to detect a
+ * user turn arriving while a previous agent run is still going (issue #298);
+ * that turn now supersedes the run (P0.1) instead of being refused.
  */
 function isInlineAgentRunning(): boolean {
   const controller = activeAgentAbort;
@@ -4784,7 +4812,9 @@ function teardownInlineAgentPanel(): void {
   inlineAgentContainerObserver = null;
 }
 
-function stopInlineAgent(): void {
+function stopInlineAgent(
+  interruptReason: string = contentT("content.agent.stopped"),
+): void {
   stopAgentConsoleTimer();
   removeAgentStartingElement();
   const container = inlineAgentContainer;
@@ -4792,7 +4822,7 @@ function stopInlineAgent(): void {
     (trace) => ({
       ...trace,
       status: "stopping",
-      error: contentT("content.agent.stopped"),
+      error: interruptReason,
     }),
     { immediate: true },
   );
@@ -4820,7 +4850,7 @@ function stopInlineAgent(): void {
       "paused",
       0,
       0,
-      contentT("content.agent.stopped"),
+      interruptReason,
     );
   }
 }

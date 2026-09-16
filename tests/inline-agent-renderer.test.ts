@@ -2,6 +2,7 @@ import { afterEach, describe, expect, it, vi } from 'vitest';
 import {
   addAgentToolEntry,
   adoptReasoningBlock,
+  appendAgentConsoleNotice,
   autoCollapseCompletedReasoningHost,
   collapseAllAgentToolGroups,
   createAgentContainer,
@@ -859,5 +860,20 @@ describe('inline agent renderer', () => {
     expect(adoptedRule).toContain('margin: 2px 0;');
     expect(adoptedRule).not.toContain('margin-left: 16px');
     expect(adoptedRule).not.toContain('border-left: 1px');
+  });
+
+  it('appends a persistent status notice into the agent console stream', () => {
+    // P0.1 visible refusal: a mid-run notice (e.g. a refused takeover) must
+    // live inside the panel — not as a transient toast — and stay readable.
+    const container = createAgentContainer();
+    document.body.appendChild(container);
+    const notice = appendAgentConsoleNotice(container, 'This message cannot take over the running agent.');
+    const stream = getAgentConsoleBody(container);
+    expect(stream?.contains(notice)).toBe(true);
+    expect(notice.className).toBe('dpp-agent-notice');
+    expect(notice.getAttribute('role')).toBe('status');
+    expect(notice.textContent).toBe('This message cannot take over the running agent.');
+    // Persistent surface: a styled element in the panel, not an auto-hiding toast.
+    expect(notice.tagName).toBe('DIV');
   });
 });

@@ -108,7 +108,8 @@ export const content = {
     codeRunning: 'Running…',
     codeRunFailed: 'Run failed',
     codeRunnerUnavailable: 'Code runner unavailable',
-    concurrencyGuard: 'An agent is still running. A duplicate task from this message was skipped. To interrupt, click Stop in the agent panel.',
+    superseded: 'Superseded by your new message: this run was stopped and a new agent run is working on it.',
+    midRunRefused: 'An agent is still running and this message cannot start a new agent run for it. To redirect the agent, click Stop in the agent panel, then send your message again.',
   },
   permission: {
     webFetch: 'DeepSeek++ needs permission to access {origin} so it can fetch that page',

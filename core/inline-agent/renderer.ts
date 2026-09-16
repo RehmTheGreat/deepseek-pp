@@ -403,6 +403,17 @@ export function injectInlineAgentStyles(): void {
     .dpp-agent-reasoning-note {
       margin: 2px 0;
     }
+    /* Persistent in-panel status notices (e.g. a refused mid-run takeover):
+       readable run-record text, never an auto-hiding toast. */
+    .dpp-agent-notice {
+      margin: 4px 0;
+      padding: 4px 8px;
+      font-size: 12px;
+      line-height: 1.5;
+      color: var(--dpp-ui-text-muted);
+      white-space: pre-wrap;
+      word-break: break-word;
+    }
     .dpp-agent-reasoning-note-toggle {
       display: flex;
       align-items: center;
@@ -1388,6 +1399,25 @@ export function createAgentStartingElement(labels?: Partial<InlineAgentRendererL
   element.setAttribute('role', 'status');
   element.textContent = labels?.starting ?? 'Starting…';
   return element;
+}
+
+/**
+ * Appends a persistent status notice (e.g. the P0.1 mid-run refusal reason)
+ * to the agent console stream. Unlike a toast, the notice lives inside the
+ * panel for the panel's lifetime, so an acknowledged-but-refused user action
+ * stays visible instead of vanishing after a few seconds.
+ */
+export function appendAgentConsoleNotice(container: HTMLElement, text: string): HTMLElement {
+  const notice = document.createElement('div');
+  notice.className = 'dpp-agent-notice';
+  notice.setAttribute('role', 'status');
+  notice.textContent = text;
+  const stream = getAgentConsoleBody(container);
+  if (stream) {
+    stream.appendChild(notice);
+    followAgentStreamBottom(stream);
+  }
+  return notice;
 }
 
 /**
