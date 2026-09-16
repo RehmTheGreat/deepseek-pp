@@ -17,6 +17,8 @@ import {
 } from '../tool';
 import { findFirstXmlToolTag } from '../tool/xml-tags';
 import {
+  DOUBLE_BAR_TOOL_CALLS_CLOSE_TAG,
+  DOUBLE_BAR_TOOL_CALLS_OPEN_TAG,
   extractToolCalls,
   LEGACY_TOOL_CALLS_CLOSE_TAG,
   LEGACY_TOOL_CALLS_OPEN_TAG,
@@ -410,6 +412,12 @@ function findXmlToolBlocks(
   return blocks;
 }
 
+/**
+ * Legacy `｜DSML｜tool_calls` blocks (linear scan). One combined scan in
+ * document order claims each block — the earliest opener wins, single-bar or
+ * corrupted double-bar (P0.2) — mirroring the tool-parser extraction claims so
+ * the strip path removes exactly what the parsers recognize, no more, no less.
+ */
 function findLegacyToolBlocks(
   text: string,
   catalog: ToolInvocationCatalog,
@@ -418,19 +426,24 @@ function findLegacyToolBlocks(
   let searchFrom = 0;
 
   while (searchFrom < text.length) {
-    const openIndex = text.indexOf(LEGACY_TOOL_CALLS_OPEN_TAG, searchFrom);
+    const singleOpenIndex = text.indexOf(LEGACY_TOOL_CALLS_OPEN_TAG, searchFrom);
+    const doubleOpenIndex = text.indexOf(DOUBLE_BAR_TOOL_CALLS_OPEN_TAG, searchFrom);
+    const corrupted = doubleOpenIndex !== -1
+      && (singleOpenIndex === -1 || doubleOpenIndex < singleOpenIndex);
+    const openTag = corrupted ? DOUBLE_BAR_TOOL_CALLS_OPEN_TAG : LEGACY_TOOL_CALLS_OPEN_TAG;
+    const closeTag = corrupted ? DOUBLE_BAR_TOOL_CALLS_CLOSE_TAG : LEGACY_TOOL_CALLS_CLOSE_TAG;
+    const openIndex = corrupted ? doubleOpenIndex : singleOpenIndex;
     if (openIndex === -1) break;
 
-    const closeIndex = text.indexOf(
-      LEGACY_TOOL_CALLS_CLOSE_TAG,
-      openIndex + LEGACY_TOOL_CALLS_OPEN_TAG.length,
-    );
+    const closeIndex = text.indexOf(closeTag, openIndex + openTag.length);
     const complete = closeIndex !== -1;
-    const end = complete ? closeIndex + LEGACY_TOOL_CALLS_CLOSE_TAG.length : text.length;
+    const end = complete ? closeIndex + closeTag.length : text.length;
     blocks.push({
       start: openIndex,
       end,
-      invocationNames: complete ? findLegacyInvocationNames(text, openIndex, end, catalog) : [],
+      invocationNames: complete
+        ? findLegacyInvocationNames(text, openIndex, end, catalog, corrupted)
+        : [],
       complete,
     });
     if (!complete) break;
@@ -445,24 +458,32 @@ function findLegacyInvocationNames(
   start: number,
   end: number,
   catalog: ToolInvocationCatalog,
+  includeDoubleBarPrefix: boolean,
 ): string[] {
   const names: string[] = [];
-  const invokePrefix = '<｜DSML｜invoke name="';
-  let searchFrom = start;
+  // A corrupted double-bar block is extracted after its delimiter bytes are
+  // normalized, so its content yields BOTH single-bar invokes and invokes that
+  // kept the corrupted form; scan both prefixes inside the claimed range.
+  const invokePrefixes = includeDoubleBarPrefix
+    ? ['<｜DSML｜invoke name="', '<｜｜DSML｜invoke name="']
+    : ['<｜DSML｜invoke name="'];
+  for (const invokePrefix of invokePrefixes) {
+    let searchFrom = start;
 
-  while (searchFrom < end) {
-    const invokeIndex = text.indexOf(invokePrefix, searchFrom);
-    if (invokeIndex === -1 || invokeIndex >= end) break;
+    while (searchFrom < end) {
+      const invokeIndex = text.indexOf(invokePrefix, searchFrom);
+      if (invokeIndex === -1 || invokeIndex >= end) break;
 
-    const nameStart = invokeIndex + invokePrefix.length;
-    const nameEnd = text.indexOf('"', nameStart);
-    if (nameEnd === -1 || nameEnd >= end) break;
+      const nameStart = invokeIndex + invokePrefix.length;
+      const nameEnd = text.indexOf('"', nameStart);
+      if (nameEnd === -1 || nameEnd >= end) break;
 
-    const invocationName = text.slice(nameStart, nameEnd);
-    if (catalog.descriptorByInvocationName.has(invocationName)) {
-      names.push(invocationName);
+      const invocationName = text.slice(nameStart, nameEnd);
+      if (catalog.descriptorByInvocationName.has(invocationName)) {
+        names.push(invocationName);
+      }
+      searchFrom = nameEnd + 1;
     }
-    searchFrom = nameEnd + 1;
   }
 
   return names;

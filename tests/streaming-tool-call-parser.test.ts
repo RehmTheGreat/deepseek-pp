@@ -326,3 +326,50 @@ describe('createStreamingToolCallParser 请求级 cwd 隔离（评审 #1）', ()
     expect(resActive.completed[0].localSkillDir).toBe('/skills/a');
   });
 });
+
+// P0.2 near-miss delimiter policy: the corrupted double-fullwidth-bar legacy
+// close (`</｜｜DSML｜invoke>`) is a foreign terminator exactly like the
+// single-bar literal, including when it is split across chunk boundaries.
+describe('createStreamingToolCallParser near-miss double-bar terminators (P0.2)', () => {
+  const descriptors = createArtifactToolDescriptors('en');
+
+  it('fail-fasts an XML call closed by the corrupted legacy invoke terminator', () => {
+    const parser = createStreamingToolCallParser(descriptors);
+    const start = parser.append('<artifact_create>');
+    const result = parser.append('{"filename":"a.txt"}</｜｜DSML｜invoke>');
+
+    expect(result.failed).toHaveLength(1);
+    expect(result.failed[0]).toMatchObject({
+      id: start.started[0].id,
+      invocationName: 'artifact_create',
+      parseError: { code: 'tool_call_close_mismatched', retryable: false },
+    });
+    expect(parser.flush()).toEqual({ started: [], completed: [], failed: [], streamed: [] });
+  });
+
+  it('holds back a corrupted legacy close split across chunk boundaries', () => {
+    const parser = createStreamingToolCallParser(descriptors);
+    const start = parser.append('<artifact_create>');
+    const first = parser.append('{"filename":"a.txt"}</｜｜DSML｜inv');
+
+    // The partial corrupted terminator stays buffered; nothing completes yet.
+    expect(first.completed).toHaveLength(0);
+    expect(first.failed).toHaveLength(0);
+
+    const second = parser.append('oke>');
+    expect(second.failed).toHaveLength(1);
+    expect(second.failed[0]).toMatchObject({
+      id: start.started[0].id,
+      parseError: { code: 'tool_call_close_mismatched' },
+    });
+  });
+
+  it('leaves a corrupted legacy block without an XML call untouched (streams as text)', () => {
+    const parser = createStreamingToolCallParser(descriptors);
+    const result = parser.append('prose <｜｜DSML｜tool_calls> not an xml call');
+
+    expect(result.started).toHaveLength(0);
+    expect(result.completed).toHaveLength(0);
+    expect(result.failed).toHaveLength(0);
+  });
+});

@@ -1,7 +1,7 @@
 import { describe, expect, it } from 'vitest';
 import { createArtifactToolDescriptors } from '../core/artifact';
 import { extractLegacyToolCalls, extractToolCalls, replaceToolCallsWithSummary, stripToolCalls } from '../core/interceptor/tool-parser';
-import { MISMATCHED_TOOL_CALL_ERROR_CODE } from '../core/tool/execution-error';
+import { MISMATCHED_TOOL_CALL_ERROR_CODE, TOOL_CALL_DELIMITER_CORRECTED_ERROR_CODE } from '../core/tool/execution-error';
 import { createStreamingToolCallParser } from '../core/interceptor/streaming-tool-call-parser';
 
 /**
@@ -278,5 +278,81 @@ describe('streaming mismatched-close recovery', () => {
       invocationName: 'artifact_create',
       payload: { filename: 'legacy.txt' },
     });
+  });
+});
+
+describe('near-miss double-bar delimiter recovery (P0.2, StreamFn fallback scoping)', () => {
+  const descriptors = createArtifactToolDescriptors('en');
+
+  // The corrupted block passes the `｜DSML｜` substring gate (｜｜DSML｜
+  // contains ｜DSML｜), so the same scoping rules must hold for it.
+  it('pure corrupted-legacy reply with toolCallCount === 0 parses via full fallback extraction', () => {
+    const raw = [
+      '<｜｜DSML｜tool_calls>',
+      '<｜｜DSML｜invoke name="artifact_create">',
+      '<｜｜DSML｜parameter name="filename" string="true">legacy.txt</｜｜DSML｜parameter>',
+      '</｜｜DSML｜invoke>',
+      '</｜｜DSML｜tool_calls>',
+    ].join('');
+    const parser = createStreamingToolCallParser(descriptors);
+
+    let toolCallCount = 0;
+    for (const event of [parser.append(raw), parser.flush()]) {
+      toolCallCount += event.completed.length + event.failed.length;
+    }
+    expect(toolCallCount).toBe(0);
+    expect(raw.includes('｜DSML｜')).toBe(true);
+
+    const fallbackCalls = extractToolCalls(raw, { descriptors });
+    expect(fallbackCalls).toHaveLength(1);
+    expect(fallbackCalls[0]).toMatchObject({
+      invocationName: 'artifact_create',
+      payload: { filename: 'legacy.txt' },
+      parseError: { code: TOOL_CALL_DELIMITER_CORRECTED_ERROR_CODE, retryable: false },
+    });
+  });
+
+  it('mixed reply: streamed XML call + corrupted legacy block — fallback emits only the legacy call, no duplicate', () => {
+    const mismatched = '<artifact_create>{"filename":"a.txt"}</invoke>';
+    const corruptedBlock = [
+      '<｜｜DSML｜tool_calls>',
+      '<｜｜DSML｜invoke name="artifact_bundle_create">',
+      '<｜｜DSML｜parameter name="filename" string="true">legacy.zip</｜｜DSML｜parameter>',
+      '</｜｜DSML｜invoke>',
+      '</｜｜DSML｜tool_calls>',
+    ].join('');
+    const raw = mismatched + corruptedBlock;
+    const parser = createStreamingToolCallParser(descriptors);
+
+    const streamed: ReturnType<typeof extractToolCalls> = [];
+    let toolCallCount = 0;
+    for (const event of [parser.append(raw), parser.flush()]) {
+      toolCallCount += event.completed.length + event.failed.length;
+      streamed.push(...event.completed, ...event.failed);
+    }
+    expect(toolCallCount).toBeGreaterThan(0);
+    expect(streamed).toHaveLength(1);
+    expect(streamed[0].parseError?.code).toBe(MISMATCHED_TOOL_CALL_ERROR_CODE);
+
+    // Mirrors deepseek-stream-fn.ts: count > 0 restricts the fallback to
+    // legacy ｜DSML｜ blocks; the corrupted analogue is now found there too,
+    // while the streamed XML call is never re-emitted.
+    const fallbackCalls = toolCallCount === 0
+      ? extractToolCalls(raw, { descriptors })
+      : extractLegacyToolCalls(raw, { descriptors });
+    expect(fallbackCalls).toHaveLength(1);
+    expect(fallbackCalls[0]).toMatchObject({
+      invocationName: 'artifact_bundle_create',
+      payload: { filename: 'legacy.zip' },
+      parseError: { code: TOOL_CALL_DELIMITER_CORRECTED_ERROR_CODE },
+    });
+    expect(fallbackCalls.some((call) => call.raw.includes('</invoke>'))).toBe(false);
+
+    const emitted = [...streamed, ...fallbackCalls];
+    expect(emitted).toHaveLength(2);
+    expect(emitted.filter((call) => call.parseError?.code === MISMATCHED_TOOL_CALL_ERROR_CODE))
+      .toHaveLength(1);
+    expect(emitted.filter((call) => call.parseError?.code === TOOL_CALL_DELIMITER_CORRECTED_ERROR_CODE))
+      .toHaveLength(1);
   });
 });

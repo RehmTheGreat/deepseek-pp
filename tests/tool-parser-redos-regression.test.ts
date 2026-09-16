@@ -1,6 +1,7 @@
 import { describe, expect, it } from 'vitest';
 import { extractToolCalls, stripToolCalls, replaceToolCallsWithSummary } from '../core/interceptor/tool-parser';
 import { createArtifactToolDescriptors } from '../core/artifact';
+import { TOOL_CALL_DELIMITER_CORRECTED_ERROR_CODE } from '../core/tool/execution-error';
 
 describe('H1 ReDoS regression', () => {
   const descriptors = createArtifactToolDescriptors('en');
@@ -53,6 +54,27 @@ describe('H1 ReDoS regression', () => {
     const t0 = performance.now();
     const calls = extractToolCalls(input, { descriptors });
     expect(calls).toHaveLength(1);
+    expect(performance.now() - t0).toBeLessThan(2000);
+  });
+  it('corrupted double-bar block scan stays linear without catastrophic backtracking', () => {
+    const input = '<｜｜DSML｜tool_calls>' + ' '.repeat(119_000);
+    const t0 = performance.now();
+    expect(extractToolCalls(input, { descriptors })).toHaveLength(0);
+    expect(performance.now() - t0).toBeLessThan(2000);
+  });
+  it('recovers a corrupted double-bar block bounded inside 120K text fast (linear)', () => {
+    const block = [
+      '<｜｜DSML｜tool_calls>',
+      '<｜｜DSML｜invoke name="artifact_create">',
+      '<｜｜DSML｜parameter name="filename" string="true">a.txt</｜｜DSML｜parameter>',
+      '</｜｜DSML｜invoke>',
+      '</｜｜DSML｜tool_calls>',
+    ].join('');
+    const input = 'x'.repeat(60_000) + block + 'y'.repeat(60_000);
+    const t0 = performance.now();
+    const calls = extractToolCalls(input, { descriptors });
+    expect(calls).toHaveLength(1);
+    expect(calls[0].parseError?.code).toBe(TOOL_CALL_DELIMITER_CORRECTED_ERROR_CODE);
     expect(performance.now() - t0).toBeLessThan(2000);
   });
 });

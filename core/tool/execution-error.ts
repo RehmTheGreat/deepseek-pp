@@ -6,6 +6,12 @@ export const INCOMPLETE_TOOL_CALL_ERROR_CODE = 'tool_call_incomplete';
 // the loop sees the call and fails visibly instead of silently dropping it.
 export const MISMATCHED_TOOL_CALL_ERROR_CODE = 'tool_call_close_mismatched';
 
+// A legacy ｜DSML｜ block emitted with the corrupted double-fullwidth-bar
+// delimiters (`<｜｜DSML｜…`). Recovered through the normal legacy path after
+// bounded delimiter normalization, so the parseError feedback loop can tell
+// the model its delimiters were corrected instead of executing prose silently.
+export const TOOL_CALL_DELIMITER_CORRECTED_ERROR_CODE = 'tool_call_delimiter_corrected';
+
 export class ToolPostEffectPersistenceError extends Error {
   readonly code = 'tool_post_effect_persistence_failed' as const;
   readonly retryable = false as const;

@@ -22,7 +22,11 @@ const STREAM_TOOL_BODY_MAX_CHARS = 1_048_576;
 // Foreign close literals emitted by models trained on a generic `<invoke>`
 // wire format. Kept local so the streaming bundle stays independent of the
 // batch tool-parser module (main-world/content entrypoints import only this).
+// The double-bar literal is the corrupted legacy analogue (P0.2 near-miss
+// delimiter policy): it bounds a mismatched-close XML call exactly like the
+// single-bar form.
 const INVOKE_CLOSE_TERMINATOR_LEGACY = '</｜DSML｜invoke>';
+const INVOKE_CLOSE_TERMINATOR_LEGACY_DOUBLE = '</｜｜DSML｜invoke>';
 const INVOKE_CLOSE_TERMINATOR_PLAIN = '</invoke>';
 
 export interface StreamingToolCallParserEvent {
@@ -220,6 +224,7 @@ class XmlStreamingToolCallParser implements StreamingToolCallParser {
     const foreignClose = findFirstXmlToolTag(text, this.invocationNames, { closing: true });
     if (foreignClose) consider(foreignClose.index, `</${foreignClose.name}>`);
     consider(text.indexOf(INVOKE_CLOSE_TERMINATOR_LEGACY), INVOKE_CLOSE_TERMINATOR_LEGACY);
+    consider(text.indexOf(INVOKE_CLOSE_TERMINATOR_LEGACY_DOUBLE), INVOKE_CLOSE_TERMINATOR_LEGACY_DOUBLE);
     consider(text.indexOf(INVOKE_CLOSE_TERMINATOR_PLAIN), INVOKE_CLOSE_TERMINATOR_PLAIN);
     const nextOpen = findFirstXmlToolTag(text, this.invocationNames, { closing: false });
     if (nextOpen) consider(nextOpen.index, `<${nextOpen.name}>`);
@@ -382,14 +387,18 @@ function createEmptyParserEvent(): StreamingToolCallParserEvent {
 }
 
 /**
- * Longest suffix of `text` that is a proper prefix of a legacy/plain
- * `</invoke>` close literal, so a foreign terminator split across chunks stays
- * in the pending buffer until complete. Bounded by the literal lengths (≤14
- * chars), i.e. constant work per chunk.
+ * Longest suffix of `text` that is a proper prefix of a legacy (single- or
+ * corrupted double-bar) / plain `</invoke>` close literal, so a foreign
+ * terminator split across chunks stays in the pending buffer until complete.
+ * Bounded by the literal lengths (≤16 chars), i.e. constant work per chunk.
  */
 function getInvokeCloseTailLength(text: string): number {
   let longest = 0;
-  for (const literal of [INVOKE_CLOSE_TERMINATOR_LEGACY, INVOKE_CLOSE_TERMINATOR_PLAIN]) {
+  for (const literal of [
+    INVOKE_CLOSE_TERMINATOR_LEGACY,
+    INVOKE_CLOSE_TERMINATOR_LEGACY_DOUBLE,
+    INVOKE_CLOSE_TERMINATOR_PLAIN,
+  ]) {
     const max = Math.min(text.length, literal.length - 1);
     for (let length = max; length > longest; length -= 1) {
       if (literal.startsWith(text.slice(text.length - length))) {

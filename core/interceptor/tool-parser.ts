@@ -6,7 +6,7 @@ import {
   type ToolInvocationCatalog,
   type ToolParsingInput,
 } from '../tool';
-import { MISMATCHED_TOOL_CALL_ERROR_CODE } from '../tool/execution-error';
+import { MISMATCHED_TOOL_CALL_ERROR_CODE, TOOL_CALL_DELIMITER_CORRECTED_ERROR_CODE } from '../tool/execution-error';
 import { findFirstXmlToolTag, type XmlToolTagMatch } from '../tool/xml-tags';
 
 export const LEGACY_TOOL_CALLS_OPEN_TAG = '<｜DSML｜tool_calls>';
@@ -19,6 +19,18 @@ const LEGACY_PARAMETER_TYPE_PREFIX = '" string="';
 const LEGACY_PARAMETER_CLOSE_TAG = '</｜DSML｜parameter>';
 // Foreign close emitted by models trained on a generic `<invoke>` wire format.
 const PLAIN_INVOKE_CLOSE_TAG = '</invoke>';
+
+// Near-miss delimiter policy (P0.2): models imitating DeepSeek native protocol
+// tokens sometimes emit the legacy DSML tags with a DOUBLED fullwidth bar. Only
+// these exact corrupted tag literals are recognized — never a bare `｜DSML｜`
+// substring, and never arbitrary unknown delimiters. A recognized block's
+// delimiter bytes are normalized onto the single-bar forms and re-extracted
+// through the SAME legacy machinery below (no second extraction algorithm).
+export const DOUBLE_BAR_TOOL_CALLS_OPEN_TAG = '<｜｜DSML｜tool_calls>';
+export const DOUBLE_BAR_TOOL_CALLS_CLOSE_TAG = '</｜｜DSML｜tool_calls>';
+const DOUBLE_BAR_INVOKE_CLOSE_TAG = '</｜｜DSML｜invoke>';
+const DOUBLE_BAR_DELIMITER_OPEN_PREFIX = '<｜｜DSML｜';
+const DOUBLE_BAR_DELIMITER_CLOSE_PREFIX = '</｜｜DSML｜';
 
 export function extractToolCalls(text: string, input?: ToolParsingInput): ToolCall[] {
   const catalog = createToolInvocationCatalog(input?.descriptors);
@@ -138,9 +150,10 @@ interface XmlToolCallTerminator {
 /**
  * Earliest terminator after `fromIndex`: any catalog closing tag (foreign,
  * because the same-name close was already searched in vain), the legacy
- * `</｜DSML｜invoke>` or plain `</invoke>` close, or the next known open tag.
- * Every candidate is one linear forward scan with an advancing start, so the
- * caller's loop stays linear (ReDoS H1 constraint).
+ * `</｜DSML｜invoke>` (or its corrupted double-bar analogue) or plain
+ * `</invoke>` close, or the next known open tag. Every candidate is one linear
+ * forward scan with an advancing start, so the caller's loop stays linear
+ * (ReDoS H1 constraint).
  */
 function findXmlToolCallTerminator(
   text: string,
@@ -167,6 +180,15 @@ function findXmlToolCallTerminator(
       index: legacyCloseIdx,
       endIndex: legacyCloseIdx + LEGACY_INVOKE_CLOSE_TAG.length,
       label: LEGACY_INVOKE_CLOSE_TAG,
+      closing: true,
+    });
+  }
+  const doubleBarCloseIdx = text.indexOf(DOUBLE_BAR_INVOKE_CLOSE_TAG, fromIndex);
+  if (doubleBarCloseIdx !== -1) {
+    consider({
+      index: doubleBarCloseIdx,
+      endIndex: doubleBarCloseIdx + DOUBLE_BAR_INVOKE_CLOSE_TAG.length,
+      label: DOUBLE_BAR_INVOKE_CLOSE_TAG,
       closing: true,
     });
   }
@@ -225,26 +247,99 @@ function createMismatchedCloseToolCall(
 /**
  * Linear-time legacy `｜DSML｜tool_calls` extraction. Replaces the
  * `[\s\S]*?`-based legacy regexes (same ReDoS class as the XML parser).
+ *
+ * One combined scan in document order claims each block: the earliest opener
+ * wins, single-bar or corrupted double-bar. The two open literals are
+ * byte-distinct (neither contains the other), so a nested block inside a
+ * claimed block is covered by that block's own content extraction and can
+ * never yield a second record for the same call (dedupe policy).
  */
 function extractLegacyToolCallsForCatalog(text: string, catalog: ToolInvocationCatalog): ToolCall[] {
   const calls: ToolCall[] = [];
   let fromIndex = 0;
 
   while (fromIndex < text.length) {
-    const openIdx = text.indexOf(LEGACY_TOOL_CALLS_OPEN_TAG, fromIndex);
-    if (openIdx === -1) break;
-    const closeIdx = text.indexOf(
-      LEGACY_TOOL_CALLS_CLOSE_TAG,
-      openIdx + LEGACY_TOOL_CALLS_OPEN_TAG.length,
-    );
-    if (closeIdx === -1) break;
-    const blockEnd = closeIdx + LEGACY_TOOL_CALLS_CLOSE_TAG.length;
-    const blockContent = text.slice(openIdx, blockEnd);
-    extractLegacyInvokes(blockContent, catalog, calls);
-    fromIndex = blockEnd;
+    const block = findNextLegacyToolCallsBlock(text, fromIndex);
+    if (!block) break;
+    const blockContent = text.slice(block.openIndex, block.endIndex);
+    if (block.corrupted) {
+      calls.push(...extractCorrectedLegacyInvokes(blockContent, catalog));
+    } else {
+      extractLegacyInvokes(blockContent, catalog, calls);
+    }
+    fromIndex = block.endIndex;
   }
 
   return calls;
+}
+
+interface LegacyToolCallsBlockRange {
+  openIndex: number;
+  /** Exclusive end of the block (past its closing tag). */
+  endIndex: number;
+  /** The opener used the corrupted double-bar delimiter form. */
+  corrupted: boolean;
+}
+
+/**
+ * Earliest `｜DSML｜tool_calls` block opener from `fromIndex`, single-bar or
+ * corrupted double-bar, each matched with its own exact closing tag. An
+ * unclosed opener stays unclaimed (the legacy skip, mirrored for both forms).
+ */
+function findNextLegacyToolCallsBlock(
+  text: string,
+  fromIndex: number,
+): LegacyToolCallsBlockRange | null {
+  const singleOpenIdx = text.indexOf(LEGACY_TOOL_CALLS_OPEN_TAG, fromIndex);
+  const doubleOpenIdx = text.indexOf(DOUBLE_BAR_TOOL_CALLS_OPEN_TAG, fromIndex);
+  const corrupted = doubleOpenIdx !== -1 && (singleOpenIdx === -1 || doubleOpenIdx < singleOpenIdx);
+  const openTag = corrupted ? DOUBLE_BAR_TOOL_CALLS_OPEN_TAG : LEGACY_TOOL_CALLS_OPEN_TAG;
+  const openIndex = corrupted ? doubleOpenIdx : singleOpenIdx;
+  if (openIndex === -1) return null;
+  const closeTag = corrupted ? DOUBLE_BAR_TOOL_CALLS_CLOSE_TAG : LEGACY_TOOL_CALLS_CLOSE_TAG;
+  const closeIdx = text.indexOf(closeTag, openIndex + openTag.length);
+  if (closeIdx === -1) return null;
+  return { openIndex, endIndex: closeIdx + closeTag.length, corrupted };
+}
+
+/**
+ * Extracts the invokes of a corrupted double-bar block after normalizing its
+ * delimiter bytes onto the single-bar forms — the SAME legacy machinery, not a
+ * second algorithm. Successfully recovered calls carry
+ * `tool_call_delimiter_corrected` so the parseError feedback loop informs the
+ * model its delimiters were corrected; a call whose inner extraction already
+ * failed keeps its own recovery code (mismatched-close semantics) — the
+ * correction never masks a real failure and vice versa.
+ */
+function extractCorrectedLegacyInvokes(
+  blockContent: string,
+  catalog: ToolInvocationCatalog,
+): ToolCall[] {
+  const normalized = normalizeCorruptedDelimiterBytes(blockContent);
+  const calls: ToolCall[] = [];
+  extractLegacyInvokes(normalized, catalog, calls);
+  return calls.map((call) => call.parseError ? call : {
+    ...call,
+    parseError: createToolParseError(
+      TOOL_CALL_DELIMITER_CORRECTED_ERROR_CODE,
+      call.invocationName ?? call.name,
+      'Tool call was written with doubled ｜｜DSML｜ delimiters and was recovered '
+        + 'after normalizing them to the ｜DSML｜ format.',
+    ),
+  });
+}
+
+/**
+ * Normalizes ONLY the corrupted `<｜｜DSML｜` / `</｜｜DSML｜` tag prefixes
+ * (the invocation-shaped structure). Bare `｜｜DSML｜` bytes inside prose or
+ * parameter values are left untouched.
+ */
+function normalizeCorruptedDelimiterBytes(blockContent: string): string {
+  return blockContent
+    .split(DOUBLE_BAR_DELIMITER_CLOSE_PREFIX)
+    .join('</｜DSML｜')
+    .split(DOUBLE_BAR_DELIMITER_OPEN_PREFIX)
+    .join('<｜DSML｜');
 }
 
 function extractLegacyInvokes(
@@ -416,21 +511,20 @@ function collectXmlToolCallBlocks(text: string, catalog: ToolInvocationCatalog):
   return blocks;
 }
 
-/** Collects every legacy `｜DSML｜tool_calls` block (linear scan). */
+/**
+ * Collects every legacy `｜DSML｜tool_calls` block (linear scan) — the same
+ * combined single-bar / corrupted double-bar scan as extraction, so the strip
+ * path removes exactly what the parsers recognize, no more, no less.
+ */
 function collectLegacyToolCallBlocks(text: string): ToolCallBlockRange[] {
   const blocks: ToolCallBlockRange[] = [];
   let fromIndex = 0;
 
   while (fromIndex < text.length) {
-    const openIdx = text.indexOf(LEGACY_TOOL_CALLS_OPEN_TAG, fromIndex);
-    if (openIdx === -1) break;
-    const closeIdx = text.indexOf(
-      LEGACY_TOOL_CALLS_CLOSE_TAG,
-      openIdx + LEGACY_TOOL_CALLS_OPEN_TAG.length,
-    );
-    if (closeIdx === -1) break;
-    blocks.push({ start: openIdx, end: closeIdx + LEGACY_TOOL_CALLS_CLOSE_TAG.length });
-    fromIndex = blocks[blocks.length - 1].end;
+    const block = findNextLegacyToolCallsBlock(text, fromIndex);
+    if (!block) break;
+    blocks.push({ start: block.openIndex, end: block.endIndex });
+    fromIndex = block.endIndex;
   }
 
   return blocks;
