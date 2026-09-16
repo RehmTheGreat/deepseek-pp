@@ -9,6 +9,8 @@ import {
   getPartialXmlToolTagTailLength,
 } from '../tool/xml-tags';
 import {
+  DOUBLE_BAR_TOOL_CALLS_CLOSE_TAG,
+  DOUBLE_BAR_TOOL_CALLS_OPEN_TAG,
   LEGACY_TOOL_CALLS_CLOSE_TAG,
   LEGACY_TOOL_CALLS_OPEN_TAG,
 } from './tool-parser';
@@ -50,6 +52,15 @@ class ToolTextAccumulator implements StreamingToolTextAccumulator {
       key: 'legacy:dsml-tool-calls',
       openTag: LEGACY_TOOL_CALLS_OPEN_TAG,
       closeTag: LEGACY_TOOL_CALLS_CLOSE_TAG,
+    });
+    // P0.2 near-miss delimiter policy: the corrupted double-bar block must be
+    // live-suppressed exactly like the single-bar block — no DSML block may
+    // ever render as prose. Same exact-literal target mechanics; the prefix
+    // and chunk-boundary holdback machinery derives from the target list.
+    this.suppressionTargets.push({
+      key: 'legacy:dsml-tool-calls-double',
+      openTag: DOUBLE_BAR_TOOL_CALLS_OPEN_TAG,
+      closeTag: DOUBLE_BAR_TOOL_CALLS_CLOSE_TAG,
     });
     for (const target of this.suppressionTargets) {
       this.targetByOpenTag.set(target.openTag, target);

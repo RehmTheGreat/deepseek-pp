@@ -84,3 +84,30 @@ describe('createStreamingToolTextAccumulator', () => {
     expect(stream.flush()).toBe('Before  after');
   });
 });
+
+// P0.2 near-miss delimiter policy: the corrupted double-bar legacy block is
+// live-suppressed exactly like the single-bar block (no DSML block may ever
+// render as prose), including mid-stream across chunk boundaries; prose
+// containing a bare ｜DSML｜ substring stays untouched.
+describe('createStreamingToolTextAccumulator corrupted double-bar blocks (P0.2)', () => {
+  const descriptors = createMemoryToolDescriptors('en');
+
+  it('suppresses corrupted legacy DSML blocks across chunk boundaries', () => {
+    const stream = createStreamingToolTextAccumulator(descriptors);
+
+    expect(stream.append('Before <｜｜DSML｜tool_')).toBe('Before ');
+    expect(stream.append('calls><｜｜DSML｜invoke name="memory_save">')).toBe('Before ');
+    expect(stream.append('<｜｜DSML｜parameter name="name" string="true">n</｜｜DSML｜parameter>')).toBe('Before ');
+    expect(stream.append('</｜｜DSML｜invoke></｜｜DSML｜tool_')).toBe('Before ');
+    expect(stream.append('calls> after')).toBe('Before  after');
+    expect(stream.flush()).toBe('Before  after');
+  });
+
+  it('leaves prose with a bare ｜DSML｜ substring or shapeless double bars visible', () => {
+    const stream = createStreamingToolTextAccumulator(descriptors);
+
+    const text = 'Prose ｜DSML｜ and shapeless ｜｜DSML｜ bars stay visible.';
+    expect(stream.append(text)).toBe(text);
+    expect(stream.flush()).toBe(text);
+  });
+});
