@@ -54,6 +54,10 @@ interface DecodedCreateToolAuthorizationPayload {
   chatSessionId?: string | null;
   runId?: string;
   descriptorIds?: string[];
+  // Human-readable names parallel to descriptorIds (same order); consumed by
+  // the background reconciliation to report dropped tools by name. Optional
+  // and additive — older callers omit it and ids are used as the fallback.
+  descriptorNames?: string[];
   toolIntent?: string;
   // Review #2: the page/model-supplied localSkillDir is an untrusted field;
   // after decoding, background validates whether it belongs to an imported local
@@ -213,6 +217,13 @@ export const TOOL_RUNTIME_PAYLOAD_DECODERS: ToolRuntimePayloadDecoderMap = {
           || !value.descriptorIds.every((id) => typeof id === 'string')
         )
       )
+      || (
+        value.descriptorNames !== undefined
+        && (
+          !Array.isArray(value.descriptorNames)
+          || !value.descriptorNames.every((name) => typeof name === 'string')
+        )
+      )
       || (value.localSkillDir !== undefined && typeof value.localSkillDir !== 'string')
     ) {
       return invalidDecodedPayload('invalid_tool_authorization_request');
@@ -223,6 +234,7 @@ export const TOOL_RUNTIME_PAYLOAD_DECODERS: ToolRuntimePayloadDecoderMap = {
       chatSessionId: value.chatSessionId,
       runId: value.runId,
       descriptorIds: value.descriptorIds as string[] | undefined,
+      descriptorNames: value.descriptorNames as string[] | undefined,
       toolIntent: value.toolIntent as string | undefined,
       localSkillDir: value.localSkillDir as string | undefined,
     });

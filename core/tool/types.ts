@@ -209,6 +209,15 @@ export interface ToolAuthorizationGrantSummary {
   chatSessionId: string | null;
   descriptors: ToolDescriptor[];
   expiresAt: number;
+  /**
+   * Human-readable names of requested descriptors the live registry could not
+   * grant (reconciliation dropped them). Set ONLY by the CREATE_TOOL_AUTHORIZATION
+   * handler when it granted a reduced set; `createToolAuthorization` itself
+   * never sets it. In-memory transit over runtime messaging — never persisted.
+   * Absent when nothing was dropped, so existing consumers see the released
+   * shape unchanged.
+   */
+  unavailableToolNames?: string[];
 }
 
 export interface ToolGrantExecutionContext {

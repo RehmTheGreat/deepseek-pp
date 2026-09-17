@@ -116,15 +116,38 @@ export function createToolExecutionRuntimeHandlers(
       const grantableDescriptors = payload.trigger === 'agent_run'
         ? withInlineAgentSubagentSpawnDescriptor(currentDescriptors)
         : currentDescriptors;
-      const requestedDescriptorIds = payload.descriptorIds
-        ? new Set(payload.descriptorIds)
+      const requestedIds = payload.descriptorIds;
+      const requestedDescriptorIds = requestedIds
+        ? new Set(requestedIds)
         : null;
       const descriptors = requestedDescriptorIds
         ? grantableDescriptors.filter((descriptor) => requestedDescriptorIds.has(descriptor.id))
         : grantableDescriptors;
-      if (requestedDescriptorIds && descriptors.length !== requestedDescriptorIds.size) {
-        return { ok: false as const, error: 'unknown_tool_authorization_descriptor' };
-      }
+      // Descriptor reconciliation: MCP/web/browser registry churn between the
+      // turn's grant and a later id-scoped request (loop start, regenerate
+      // scope) must never kill the run with a hard unknown-descriptor failure.
+      // Grant the intersection; when NOTHING requested is grantable anymore
+      // (and the caller actually requested tools), grant the full grantable
+      // set so the run keeps working. An explicit empty selection stays the
+      // released empty-grant path — the caller asked for no tools.
+      const effectiveDescriptors =
+        requestedDescriptorIds && requestedDescriptorIds.size > 0 && descriptors.length === 0
+          ? grantableDescriptors
+          : descriptors;
+      const grantedDescriptorIds = new Set(effectiveDescriptors.map((d) => d.id));
+      const unavailableToolNames = requestedIds
+        ? [
+          ...new Set(
+            requestedIds
+              .map((id, index) =>
+                grantedDescriptorIds.has(id)
+                  ? null
+                  : payload.descriptorNames?.[index] ?? id,
+              )
+              .filter((name): name is string => name !== null),
+          ),
+        ]
+        : [];
 
       // Review #2: the page/model-supplied localSkillDir is untrusted; write it
       // to the grant only when background confirms it belongs to an imported
@@ -134,15 +157,22 @@ export function createToolExecutionRuntimeHandlers(
         requestedLocalSkillDir && await dependencies.validateLocalSkillDirectory(requestedLocalSkillDir)
           ? requestedLocalSkillDir
           : undefined;
-      return dependencies.createToolAuthorization({
+      const summary = await dependencies.createToolAuthorization({
         requestId: payload.requestId,
         trigger: payload.trigger,
         chatSessionId: payload.chatSessionId,
         runId: payload.runId,
         subject: createToolAuthorizationSubject(context),
-        descriptors,
+        descriptors: effectiveDescriptors,
         localSkillDir: validatedLocalSkillDir,
       });
+      // Additive, in-memory-only result extension: the DROPPED tools' names
+      // ride to content so the inline-agent loop can tell the model once (in
+      // continuation prompt bytes). When nothing is dropped the response stays
+      // byte-identical to the released grant summary.
+      return unavailableToolNames.length > 0
+        ? { ...summary, unavailableToolNames }
+        : summary;
     }),
     defineToolPayloadRuntimeCommandHandler('CLOSE_TOOL_AUTHORIZATION', async (decoded, context) => {
       if (decoded.ok === false) {

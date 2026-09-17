@@ -1977,6 +1977,8 @@ async function createContentToolAuthorization(input: {
   chatSessionId: string | null;
   runId?: string;
   descriptorIds?: string[];
+  /** Human-readable names parallel to descriptorIds (dropped-tool reporting). */
+  descriptorNames?: string[];
   toolIntent?: string;
   /** Background-validated local-skill directory; page/model untrusted (Review #2) */
   localSkillDir?: string;
@@ -5220,12 +5222,23 @@ async function startInlineAgentLoop(
       chatSessionId: payload.chatSessionId,
       runId: payload.loopId,
       descriptorIds: payload.toolDescriptors.map((descriptor) => descriptor.id),
+      // Names parallel to descriptorIds: the background reconciliation reports
+      // dropped tools BY NAME (not id) when the registry churned between the
+      // turn's grant and this loop grant.
+      descriptorNames: payload.toolDescriptors.map((descriptor) => descriptor.name),
     });
     activeToolAuthorizations.set(authorizationRequestKey, authorization);
     inlineAgentAuthorizationRequestKeys.set(
       payload.loopId,
       authorizationRequestKey,
     );
+    // Descriptor reconciliation: tools dropped from this run's grant are told
+    // to the MODEL once, via the loop's continuation prompt (in-memory only —
+    // never persisted, never an AGENT_* event). Same payload-mutation pattern
+    // as the modelBackend auto-select above.
+    if (authorization.unavailableToolNames?.length) {
+      payload.unavailableToolNames = authorization.unavailableToolNames;
+    }
   } catch (error) {
     handleAgentLoopError({
       loopId: payload.loopId,

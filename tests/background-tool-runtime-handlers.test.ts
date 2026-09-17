@@ -15,6 +15,7 @@ import { TOOL_RUNTIME_PAYLOAD_DECODERS } from '../core/messaging/tool-runtime-re
 import type { McpCapabilitySettings } from '../core/mcp/capability-types';
 import type { McpServerConfig, McpToolCacheEntry } from '../core/mcp/types';
 import { createCapabilityMap, type PlatformEnvironment } from '../core/platform/capabilities';
+import { createInlineAgentSubagentSpawnDescriptor } from '../core/inline-agent/subagent-tool';
 import { createMcpCapabilityToolDescriptors } from '../core/mcp/capability-tools';
 import { ToolAuthorizationError } from '../core/tool/authorization';
 import type {
@@ -470,6 +471,142 @@ describe('tool execution runtime handlers', () => {
       2,
       expect.objectContaining({ descriptors: [] }),
     );
+  });
+
+  it('reconciles a partially stale descriptor selection instead of failing the grant', async () => {
+    const dependencies = createExecutionDependencies();
+    vi.mocked(dependencies.getToolDescriptors).mockResolvedValue([descriptor]);
+    const handlers = createToolExecutionRuntimeHandlers(dependencies);
+
+    // One live id + one stale id: the intersection is granted and the dropped
+    // tool is reported by NAME (never by id) so content can tell the model
+    // once, in prompt bytes. The released hard `unknown_tool_authorization_
+    // descriptor` failure is deleted at the root.
+    const result = await dispatch(handlers, {
+      type: 'CREATE_TOOL_AUTHORIZATION',
+      payload: {
+        requestId: 'request-partial-stale',
+        trigger: 'agent_run',
+        chatSessionId: 'chat-1',
+        descriptorIds: [descriptor.id, 'local:ghost:vanished_tool'],
+        descriptorNames: ['Sample tool', 'Vanished tool'],
+      },
+    }, deepSeekContext) as ToolAuthorizationGrantSummary;
+
+    expect(dependencies.createToolAuthorization).toHaveBeenLastCalledWith(
+      expect.objectContaining({ descriptors: [descriptor], trigger: 'agent_run' }),
+    );
+    expect(result).toMatchObject({ id: 'grant-1' });
+    expect(result.unavailableToolNames).toEqual(['Vanished tool']);
+  });
+
+  it('falls back to the full grantable set and names every dropped tool when no requested id survives', async () => {
+    const dependencies = createExecutionDependencies();
+    // The handler merges the spawn descriptor via the DEFAULT_LOCALE factory.
+    const spawn = createInlineAgentSubagentSpawnDescriptor();
+    vi.mocked(dependencies.getToolDescriptors).mockResolvedValue([descriptor]);
+    const handlers = createToolExecutionRuntimeHandlers(dependencies);
+
+    const result = await dispatch(handlers, {
+      type: 'CREATE_TOOL_AUTHORIZATION',
+      payload: {
+        requestId: 'request-all-stale',
+        trigger: 'agent_run',
+        chatSessionId: 'chat-1',
+        descriptorIds: ['local:ghost:one', 'local:ghost:two'],
+        descriptorNames: ['Ghost One', 'Ghost Two'],
+      },
+    }, deepSeekContext) as ToolAuthorizationGrantSummary;
+
+    // All requested ids are stale → the run still gets tools: the FULL
+    // grantable set (spawn descriptor merged for agent_run) is granted.
+    expect(dependencies.createToolAuthorization).toHaveBeenLastCalledWith(
+      expect.objectContaining({ descriptors: [descriptor, spawn] }),
+    );
+    expect(result.unavailableToolNames).toEqual(['Ghost One', 'Ghost Two']);
+  });
+
+  it('keeps the unchanged response shape when ids are omitted, empty, or fully live', async () => {
+    const dependencies = createExecutionDependencies();
+    const spawn = createInlineAgentSubagentSpawnDescriptor();
+    vi.mocked(dependencies.getToolDescriptors).mockResolvedValue([descriptor]);
+    const handlers = createToolExecutionRuntimeHandlers(dependencies);
+
+    // Omitted ids: full grantable catalog, never a dropped-names field.
+    const omitted = await dispatch(handlers, {
+      type: 'CREATE_TOOL_AUTHORIZATION',
+      payload: { requestId: 'request-all', trigger: 'manual_chat', chatSessionId: 'chat-1' },
+    }, deepSeekContext) as ToolAuthorizationGrantSummary;
+    expect(omitted).not.toHaveProperty('unavailableToolNames');
+
+    // Explicit empty selection: the unchanged empty-grant path — never the
+    // all-stale fallback set (the caller asked for no tools).
+    await dispatch(handlers, {
+      type: 'CREATE_TOOL_AUTHORIZATION',
+      payload: {
+        requestId: 'request-none',
+        trigger: 'manual_chat',
+        chatSessionId: 'chat-1',
+        descriptorIds: [],
+      },
+    }, deepSeekContext);
+    expect(dependencies.createToolAuthorization).toHaveBeenLastCalledWith(
+      expect.objectContaining({ descriptors: [] }),
+    );
+
+    // Fully live selection (spawn included): nothing is dropped and the
+    // response stays byte-identical to the released grant summary.
+    const live = await dispatch(handlers, {
+      type: 'CREATE_TOOL_AUTHORIZATION',
+      payload: {
+        requestId: 'request-live',
+        trigger: 'agent_run',
+        chatSessionId: 'chat-1',
+        descriptorIds: [descriptor.id, spawn.id],
+        descriptorNames: ['Sample tool', 'Spawn subagent'],
+      },
+    }, deepSeekContext) as ToolAuthorizationGrantSummary;
+    expect(dependencies.createToolAuthorization).toHaveBeenLastCalledWith(
+      expect.objectContaining({ descriptors: [descriptor, spawn] }),
+    );
+    expect(live).not.toHaveProperty('unavailableToolNames');
+  });
+
+  it('reconciles stale manual_chat selections (regenerate scope) with the same names contract', async () => {
+    const dependencies = createExecutionDependencies();
+    vi.mocked(dependencies.getToolDescriptors).mockResolvedValue([descriptor]);
+    const handlers = createToolExecutionRuntimeHandlers(dependencies);
+
+    const result = await dispatch(handlers, {
+      type: 'CREATE_TOOL_AUTHORIZATION',
+      payload: {
+        requestId: 'request-regenerate-stale',
+        trigger: 'manual_chat',
+        chatSessionId: 'chat-1',
+        descriptorIds: ['local:ghost:old_tool'],
+        descriptorNames: ['Old tool'],
+      },
+    }, deepSeekContext) as ToolAuthorizationGrantSummary;
+
+    expect(dependencies.createToolAuthorization).toHaveBeenLastCalledWith(
+      expect.objectContaining({ descriptors: [descriptor], trigger: 'manual_chat' }),
+    );
+    expect(result.unavailableToolNames).toEqual(['Old tool']);
+  });
+
+  it('accepts the additive descriptorNames request field and still rejects malformed values', () => {
+    expect(TOOL_RUNTIME_PAYLOAD_DECODERS.CREATE_TOOL_AUTHORIZATION({
+      requestId: 'request-1',
+      trigger: 'agent_run',
+      descriptorIds: ['a'],
+      descriptorNames: ['A'],
+    })).toMatchObject({ ok: true, payload: { descriptorNames: ['A'] } });
+
+    expect(TOOL_RUNTIME_PAYLOAD_DECODERS.CREATE_TOOL_AUTHORIZATION({
+      requestId: 'request-1',
+      trigger: 'agent_run',
+      descriptorNames: 'not-an-array',
+    })).toMatchObject({ ok: false });
   });
 
   it('keeps catalog controls available to the content parser while authorizing them only through a prompt projection', async () => {

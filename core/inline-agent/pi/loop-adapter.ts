@@ -265,7 +265,15 @@ export async function runPiInlineAgentLoop(deps: PiLoopAdapterDeps): Promise<voi
           nudge.currentTurnIsNudge = true;
           return buildNudgePrompt(payload.originalPrompt, nudge.lastAssistantText, collectedExecutions, nudge.count, locale);
         }
-        return buildContinuationPrompt(payload.originalPrompt, collectedExecutions, locale);
+        // Descriptor reconciliation: dropped tools are named ONCE per line in
+        // every continuation request, so the model stops calling tools the
+        // grant no longer covers. Nudge/resume prompts are untouched.
+        return buildContinuationPrompt(
+          payload.originalPrompt,
+          collectedExecutions,
+          locale,
+          payload.unavailableToolNames,
+        );
       },
       mapToolCall,
       toolDescriptors,

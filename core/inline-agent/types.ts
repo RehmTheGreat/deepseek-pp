@@ -22,6 +22,15 @@ export interface InlineAgentStartPayload {
    * configured, matching the sidepanel chat auto-switch semantics.
    */
   modelBackend?: 'web' | 'official-api';
+  /**
+   * Human-readable names of requested tools the background could not grant at
+   * loop start (registry churn between the turn's grant and the loop grant;
+   * descriptor reconciliation). IN-MEMORY ONLY — never persisted and never an
+   * AGENT_* event: the loop's continuation prompts carry a one-line localized
+   * notice so the model does not call the dropped tools again. Absent when
+   * nothing was dropped.
+   */
+  unavailableToolNames?: string[];
 }
 
 export interface InlineAgentPromptOptions {

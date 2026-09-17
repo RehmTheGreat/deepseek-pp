@@ -81,6 +81,46 @@ describe('inline-agent model prompts', () => {
     expect(prompt).not.toContain('Continue like a real agent');
   });
 
+  it('prepends exactly one unavailable-tools notice line only when names are provided', () => {
+    const withNames = buildContinuationPrompt(
+      'Research docs',
+      [SUCCESS_EXECUTION],
+      'en',
+      ['Capture page', 'Shell Local'],
+    );
+    const zhWithNames = buildContinuationPrompt(
+      '查文档',
+      [SUCCESS_EXECUTION],
+      'zh-CN',
+      ['Capture page'],
+    );
+    // The released no-names shape carries no notice in any language.
+    const withoutNamesEn = buildContinuationPrompt('Research docs', [SUCCESS_EXECUTION], 'en');
+    const withoutNamesZh = buildContinuationPrompt('查文档', [SUCCESS_EXECUTION], 'zh-CN');
+
+    // ONE localized line, prepended, naming the dropped tools.
+    const enNoticeLines = withNames.split('\n')
+      .filter((line) => line.includes('unavailable this run'));
+    expect(enNoticeLines).toHaveLength(1);
+    expect(withNames.split('\n')[0]).toBe(enNoticeLines[0]);
+    expect(enNoticeLines[0]).toContain('Capture page, Shell Local');
+
+    const zhNoticeLines = zhWithNames.split('\n')
+      .filter((line) => line.includes('本轮不可用'));
+    expect(zhNoticeLines).toHaveLength(1);
+    expect(zhWithNames.split('\n')[0]).toBe(zhNoticeLines[0]);
+    expect(zhNoticeLines[0]).toContain('Capture page');
+
+    expect(withoutNamesEn).not.toContain('unavailable this run');
+    expect(withoutNamesZh).not.toContain('本轮不可用');
+
+    // Nudge/resume bytes are untouched by the notice in this task.
+    const nudge = buildNudgePrompt('Research docs', 'I will continue.', [SUCCESS_EXECUTION], 1, 'en');
+    const resume = buildResumePrompt('Research docs', 1, 'en');
+    expect(nudge).not.toContain('unavailable this run');
+    expect(resume).not.toContain('unavailable this run');
+  });
+
   it('pins native xychart grammar and rejects invented chart syntax in continuations', () => {
     const expectedGrammar = [
       'title "ARR"',

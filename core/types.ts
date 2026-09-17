@@ -619,6 +619,13 @@ export type MessageAction =
       chatSessionId: string | null;
       runId?: string;
       descriptorIds?: string[];
+      /**
+       * Human-readable names parallel to `descriptorIds` (same order). Used by
+       * the background reconciliation to report dropped tools BY NAME in the
+       * grant summary's `unavailableToolNames` when requested ids no longer
+       * exist in the live registry. Additive and optional; never persisted.
+       */
+      descriptorNames?: string[];
       toolIntent?: string;
       /** Background-validated local-skill directory; page/model untrusted, written to grant by background after validation (Review #2) */
       localSkillDir?: string;

@@ -159,15 +159,32 @@ function hasPendingActionAtTail(text: string): boolean {
   return true;
 }
 
+/**
+ * Builds the loop's continuation prompt. `unavailableToolNames` carries the
+ * tools the background reconciliation dropped from this run's grant (registry
+ * churn between the turn grant and the loop grant): when present, exactly ONE
+ * localized line is PREPENDED naming them, so the model does not call them
+ * again and uses the tools that are actually granted below. Absent/empty →
+ * the released continuation bytes, unchanged.
+ */
 export function buildContinuationPrompt(
   originalTask: string,
   executions: ToolExecutionRecord[],
   locale: SupportedLocale = DEFAULT_LOCALE,
+  unavailableToolNames?: readonly string[],
 ): string {
   const hasFailures = executions.some((e) => !e.result.ok);
   const results = renderWindowedToolResults(executions);
+  const unavailableNotice = unavailableToolNames?.length
+    ? [translate(
+      locale,
+      'prompt.inlineAgent.unavailableTools',
+      { names: unavailableToolNames.join(', ') },
+    )]
+    : [];
 
   return [
+    ...unavailableNotice,
     translate(locale, 'prompt.inlineAgent.continuationIntro'),
     translate(locale, 'prompt.inlineAgent.continuationEnough'),
     translate(locale, 'prompt.inlineAgent.continuationNoPseudo'),

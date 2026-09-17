@@ -11,6 +11,7 @@ export const prompt = {
   localSkillSystemContextHeader: '## Local Skill Activated',
   localSkillActivationDirective: 'Local Skill "{skillName}" has been auto-activated. Before taking any action, you MUST complete the following prerequisite steps; otherwise you are forbidden from starting the task: use the `local_file_read` tool to read the entire contents of {skillMdPath}; understand its SOP, tool boundaries, and constraints section by section. Only after reading and understanding that file may you strictly follow its instructions to execute the user\'s request; before that, do not call any business tool and do not begin work directly.',
   inlineAgent: {
+    unavailableTools: 'Some requested tools are unavailable this run and cannot be used: {names}. Use only the tools listed below instead.',
     continuationIntro: 'These are the tool results just executed for the tool-continuation task. Continue like a real agent, using the original task and these tool results to move the work forward.',
     continuationEnough: 'If the results are enough, output the final answer. Only call more tools when more information, verification, or file changes are truly needed.',
     continuationNoPseudo: 'Do not ask the user to click continue, and do not output pseudo tool-call JSON. When more action is needed, output only executable XML tool tags. Deliver files, HTML pages, and charts as Markdown fenced code blocks (e.g. ```html, ```xychart-beta, ```mermaid) so the page renders them natively; never use artifact XML tags.',
