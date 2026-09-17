@@ -277,9 +277,9 @@ describe('M5 wiring seams (source contracts, content entrypoint pattern)', () =>
     'utf8',
   );
 
-  it('registers the descriptor into the parent loop payload via the shared helper', () => {
+  it('requests the loop grant over the FULL turn catalog via the shared spawn helper', () => {
     expect(contentSource).toMatch(
-      /toolDescriptors:\s*withInlineAgentSubagentSpawnDescriptor\(\s*selectContinuableToolDescriptors\(/,
+      /toolDescriptors:\s*withInlineAgentSubagentSpawnDescriptor\(\s*authorization\.descriptors,\s*\),/,
     );
   });
 

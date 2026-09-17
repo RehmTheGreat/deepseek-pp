@@ -106,11 +106,7 @@ import {
   shouldReloadInlineAgentNativeHistory,
   type InlineAgentModelBackend,
 } from "../core/inline-agent/native-history";
-import {
-  INCOMPLETE_TOOL_CALL_ERROR_CODE,
-  selectContinuableToolDescriptors,
-  selectContinuableToolExecutions,
-} from "../core/inline-agent/execution-policy";
+import { INCOMPLETE_TOOL_CALL_ERROR_CODE } from "../core/tool/execution-error";
 import {
   INLINE_AGENT_CONTINUATION_PLACEHOLDER,
   isInlineAgentContinuationRequest,
@@ -169,7 +165,11 @@ import {
   updateAgentChildConsoleStatus,
   type AgentConsolePhase,
 } from "../core/inline-agent/renderer";
-import { decideMidRunTurn, canAnchorFreshLoop } from "../core/inline-agent/mid-run-turn";
+import {
+  decideMidRunTurn,
+  canAnchorFreshLoop,
+  selectStartableToolExecutions,
+} from "../core/inline-agent/mid-run-turn";
 import { renderInlineMarkdown } from "../core/inline-agent/markdown";
 import {
   createTranslator,
@@ -4565,12 +4565,14 @@ async function startInlineAgentIfNeeded(
     }
   }
 
-  // Collect executions that should trigger a continuation:
-  // MCP tools + local web and browser-control tools. A superseding user turn
-  // starts its fresh loop even with no continuable executions: the user's
-  // text is the new task (the loop's tool descriptors stay available).
-  const continuableExecutions = selectContinuableToolExecutions(executions);
-  if (continuableExecutions.length === 0 && !superseding) return;
+  // EVERY completed tool execution of the turn starts (or seeds) the one
+  // structured loop — a shell_exec-only turn starts it exactly like a
+  // web_search one; there is no continuable-subset policy anymore. A pending
+  // start (artifact streaming) is not an execution yet. A superseding user
+  // turn starts its fresh loop even with none: the user's text is the new
+  // task (the loop's tool descriptors stay available).
+  const startableExecutions = selectStartableToolExecutions(executions);
+  if (startableExecutions.length === 0 && !superseding) return;
   if (!canAnchorFreshLoop(complete)) return;
 
   const loopId = crypto.randomUUID();
@@ -4591,7 +4593,7 @@ async function startInlineAgentIfNeeded(
     parentMessageId: complete.assistantMessageId,
     originalPrompt: complete.agentTaskPrompt || complete.originalPrompt,
     agentTaskPrompt: complete.agentTaskPrompt || complete.originalPrompt,
-    toolExecutions: continuableExecutions,
+    toolExecutions: startableExecutions,
     promptOptions: {
       modelType: complete.promptOptions.modelType,
       searchEnabled: complete.promptOptions.searchEnabled,
@@ -4604,8 +4606,12 @@ async function startInlineAgentIfNeeded(
     // agent_run grants (single factory truth in core/inline-agent/
     // subagent-tool.ts), and the engine's depth-1 filter excludes it from
     // every child descriptor set.
+    // The grant is requested over the FULL turn catalog (the same set manual
+    // chat uses), not a continuable subset: the loop's grant and parser must
+    // cover every tool the turn can execute (shell_exec and friends
+    // included), plus spawn.
     toolDescriptors: withInlineAgentSubagentSpawnDescriptor(
-      selectContinuableToolDescriptors(authorization.descriptors),
+      authorization.descriptors,
     ),
     locale: currentContentLocale,
     powWasmUrl: chrome.runtime.getURL(DEEPSEEK_POW_WASM_PATH),

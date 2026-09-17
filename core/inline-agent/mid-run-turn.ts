@@ -16,6 +16,8 @@
  * (stopInlineAgent, panel notice, fresh loop start).
  */
 
+import type { ToolExecutionRecord } from '../types';
+
 export interface MidRunTurnInput {
   /** An inline-agent loop is currently mid-flight (live, un-aborted controller). */
   loopRunning: boolean;
@@ -82,4 +84,19 @@ export function canAnchorFreshLoop<
   T extends { chatSessionId: string | null; assistantMessageId: number | null },
 >(turn: T): turn is T & InlineAgentLoopAnchor {
   return !!turn.chatSessionId && turn.assistantMessageId !== null;
+}
+
+/**
+ * THE fresh-loop start gate over a turn's executed tools: EVERY completed
+ * (non-pending) tool execution makes the turn a loop-starting turn. The
+ * structured loop owns the presentation and continuation of any executed
+ * tool — shell_exec exactly like web_search — so there is no continuable
+ * subset anymore. A pending start (artifact still streaming) is not an
+ * execution yet and must never start a loop; an interrupted (incomplete
+ * streamed) call stays included so the loop can see the failure and recover.
+ */
+export function selectStartableToolExecutions(
+  executions: readonly ToolExecutionRecord[],
+): ToolExecutionRecord[] {
+  return executions.filter((execution) => !execution.pending);
 }
