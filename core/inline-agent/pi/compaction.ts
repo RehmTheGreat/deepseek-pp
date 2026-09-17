@@ -12,9 +12,10 @@
  * Contracts (AGENTS.md):
  *  - in-memory only: the SessionTreeEntry bridge and the summary live and
  *    die inside this call / the running loop; nothing is persisted;
- *  - fail-open: every failure (summary error, abort, deadline) logs to the
- *    in-memory diagnostic buffer and returns the INPUT messages unchanged —
- *    compaction can never break or stall a run;
+ *  - fail-open: every failure across the WHOLE pipeline (token estimate,
+ *    SessionTreeEntry bridge, package preparation, summary error, abort,
+ *    deadline) logs to the in-memory diagnostic buffer and returns the INPUT
+ *    messages unchanged — compaction can never break or stall a run;
  *  - one model authority: the summary request rides the loop's own
  *    provider/model, handed in as the `InlineAgentCompactionSummarizer` port;
  *  - byte-safety: under the threshold the input array reference is returned
@@ -155,54 +156,64 @@ export async function compactInlineAgentContext(
     return unchanged;
   }
 
-  const estimate = estimateContextTokens(messages);
-  if (!shouldCompact(estimate.tokens, contextWindowTokens, settings)) {
-    return unchanged;
-  }
-
-  // The package pipeline is session-tree shaped; this run's context is a
-  // plain message list, so wrap each message in a throwaway MessageEntry.
-  // Entries and ids exist only for the duration of this call.
-  const entries: SessionTreeEntry[] = messages.map((message, index): MessageEntry => ({
-    type: 'message',
-    id: `inline-agent-compaction-${index}`,
-    parentId: null,
-    timestamp: new Date(message.timestamp).toISOString(),
-    message,
-  }));
-
-  const preparation = prepareCompaction(entries, settings);
-  if (!preparation.ok || !preparation.value) {
-    logFailOpen('compaction preparation failed', preparation.ok ? 'nothing to compact' : preparation.error.message);
-    return unchanged;
-  }
-  const plan = preparation.value;
-  if (plan.messagesToSummarize.length === 0 && plan.turnPrefixMessages.length === 0) {
-    return unchanged; // nothing to summarize — a summary of empty history is meaningless
-  }
-
-  let outcome: CompactionRunResult;
+  // Fail-open covers the ENTIRE pipeline (review fix): the token estimate,
+  // the SessionTreeEntry bridge (`new Date(...).toISOString()` throws
+  // RangeError on a NaN timestamp) and the package preparation are all
+  // fallible, and the transformContext contract is "must not throw or
+  // reject" — any error logs and returns the INPUT messages unchanged.
   try {
-    outcome = await withBoundedDeadline(plan, input.summarizer, input.timeoutMs, signal);
-  } catch (error) {
-    logFailOpen('summary request exceeded its deadline', error);
-    return unchanged;
-  }
-  if (!outcome.ok) {
-    logFailOpen('summary request failed', outcome.error);
-    return unchanged;
-  }
+    const estimate = estimateContextTokens(messages);
+    if (!shouldCompact(estimate.tokens, contextWindowTokens, settings)) {
+      return unchanged;
+    }
 
-  const summaryMessage: AgentMessage = {
-    role: 'compactionSummary',
-    summary: outcome.value.summary,
-    tokensBefore: outcome.value.tokensBefore,
-    timestamp: Date.now(),
-  };
-  return {
-    messages: [summaryMessage, ...(outcome.value.retainedTail ?? [])],
-    result: outcome.value,
-  };
+    // The package pipeline is session-tree shaped; this run's context is a
+    // plain message list, so wrap each message in a throwaway MessageEntry.
+    // Entries and ids exist only for the duration of this call.
+    const entries: SessionTreeEntry[] = messages.map((message, index): MessageEntry => ({
+      type: 'message',
+      id: `inline-agent-compaction-${index}`,
+      parentId: null,
+      timestamp: new Date(message.timestamp).toISOString(),
+      message,
+    }));
+
+    const preparation = prepareCompaction(entries, settings);
+    if (!preparation.ok || !preparation.value) {
+      logFailOpen('compaction preparation failed', preparation.ok ? 'nothing to compact' : preparation.error.message);
+      return unchanged;
+    }
+    const plan = preparation.value;
+    if (plan.messagesToSummarize.length === 0 && plan.turnPrefixMessages.length === 0) {
+      return unchanged; // nothing to summarize — a summary of empty history is meaningless
+    }
+
+    let outcome: CompactionRunResult;
+    try {
+      outcome = await withBoundedDeadline(plan, input.summarizer, input.timeoutMs, signal);
+    } catch (error) {
+      logFailOpen('summary request exceeded its deadline', error);
+      return unchanged;
+    }
+    if (!outcome.ok) {
+      logFailOpen('summary request failed', outcome.error);
+      return unchanged;
+    }
+
+    const summaryMessage: AgentMessage = {
+      role: 'compactionSummary',
+      summary: outcome.value.summary,
+      tokensBefore: outcome.value.tokensBefore,
+      timestamp: Date.now(),
+    };
+    return {
+      messages: [summaryMessage, ...(outcome.value.retainedTail ?? [])],
+      result: outcome.value,
+    };
+  } catch (error) {
+    logFailOpen('compaction pipeline failed', error);
+    return unchanged;
+  }
 }
 
 // ---------------------------------------------------------------------------

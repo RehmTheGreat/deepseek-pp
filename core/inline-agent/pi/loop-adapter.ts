@@ -27,7 +27,13 @@
  * shape; no page-injection template is involved either way.
  */
 import type { Api, AssistantMessage, Model, Message, ToolResultMessage } from '@earendil-works/pi-ai';
-import type { StreamFn, AgentEvent, AgentLoopConfig } from '@earendil-works/pi-agent-core';
+import type {
+  AgentEvent,
+  AgentLoopConfig,
+  AgentMessage,
+  CompactionSettings,
+  StreamFn,
+} from '@earendil-works/pi-agent-core';
 import { runAgentLoop } from '@earendil-works/pi-agent-core';
 import { compactInlineAgentContext, inlineAgentConvertToLlm, type InlineAgentCompactionSummarizer } from './compaction';
 import { DEFAULT_LOCALE, translate, type SupportedLocale } from '../../i18n';
@@ -68,6 +74,64 @@ export type ExecuteToolFn = (call: ToolCall) => Promise<ToolExecutionRecord>;
 
 const INLINE_AGENT_STREAM_EVENT_MAX_CHARS = 12000;
 const TRUNCATION_SUFFIX = '\n...[truncated]';
+
+/** Overrides for the memoized transform's compaction decision (tests only; the loop uses the released defaults). */
+export interface CompactionMemoOptions {
+  timeoutMs?: number;
+  settings?: CompactionSettings;
+  contextWindowTokens?: number;
+}
+
+/**
+ * The loop's `transformContext` with a per-run compaction memo (review fix
+ * F1). pi-agent-core applies `transformContext` to a per-call copy and never
+ * adopts the result into `context.messages`, so a stateless compaction would
+ * re-run prepareCompaction plus a full summarization completion on EVERY
+ * post-threshold LLM call. The memo keeps the last transform's source
+ * (first-message reference + length) and result: when the SAME context
+ * arrives again — the engine's non-adopted copy is byte-for-byte the source
+ * it was computed from — the cached transformed array is served immediately,
+ * with no summary request. A genuinely changed context (a tool result push, a
+ * steering/resume user turn — each changes the head or the length) misses the
+ * memo and re-compacts, so the transform stays correct.
+ *
+ * The memo is closure state of ONE loop run (created fresh per
+ * {@link runPiInlineAgentLoop} call): it dies with the run, is never
+ * persisted, and aborted/superseded runs simply drop it.
+ */
+export function createCompactionMemoizedTransform(
+  summarizer: InlineAgentCompactionSummarizer | null,
+  signal: AbortSignal,
+  options?: CompactionMemoOptions,
+): NonNullable<AgentLoopConfig['transformContext']> {
+  let memo: {
+    sourceHeadRef: AgentMessage | undefined;
+    sourceLength: number;
+    transformed: AgentMessage[];
+  } | null = null;
+  return async (messages, transformSignal) => {
+    if (
+      memo !== null
+      && messages.length === memo.sourceLength
+      && messages[0] === memo.sourceHeadRef
+    ) {
+      return memo.transformed;
+    }
+    const outcome = await compactInlineAgentContext({
+      messages,
+      timeoutMs: options?.timeoutMs ?? INLINE_AGENT_COMPACTION_TIMEOUT_MS,
+      summarizer,
+      settings: options?.settings,
+      contextWindowTokens: options?.contextWindowTokens,
+    }, transformSignal ?? signal);
+    memo = {
+      sourceHeadRef: messages[0],
+      sourceLength: messages.length,
+      transformed: outcome.messages,
+    };
+    return outcome.messages;
+  };
+}
 
 export interface PiLoopAdapterDeps {
   payload: InlineAgentStartPayload;
@@ -363,21 +427,17 @@ export async function runPiInlineAgentLoop(deps: PiLoopAdapterDeps): Promise<voi
     // rendering for compaction summaries (byte-identical for contexts
     // without one — see `inlineAgentConvertToLlm`).
     convertToLlm: inlineAgentConvertToLlm,
-    // Autocompact (Task 5): token-efficient long loops. Runs before EVERY
-    // LLM call on both backends; under the threshold it returns the input
-    // array untouched (no prompt-byte change). Fail-open by contract: any
-    // compaction failure logs to the in-memory diagnostic buffer and returns
-    // the messages unchanged — the run can never break or stall on it. The
-    // summarizer is null on the web backend (chain-bound stream surface), so
-    // compaction is decision-free there today.
-    transformContext: async (messages, transformSignal) => {
-      const outcome = await compactInlineAgentContext({
-        messages,
-        timeoutMs: INLINE_AGENT_COMPACTION_TIMEOUT_MS,
-        summarizer,
-      }, transformSignal ?? signal);
-      return outcome.messages;
-    },
+    // Autocompact (Task 5, memoized per review fix F1): token-efficient long
+    // loops. Runs before EVERY LLM call on both backends; under the threshold
+    // it returns the input array untouched (no prompt-byte change). Fail-open
+    // by contract: any compaction failure logs to the in-memory diagnostic
+    // buffer and returns the messages unchanged — the run can never break or
+    // stall on it. The summarizer is null on the web backend (chain-bound
+    // stream surface), so compaction is decision-free there today. The
+    // per-run memo (see {@link createCompactionMemoizedTransform}) stops the
+    // engine's non-adopted transform copies from re-firing the summary
+    // request on every post-threshold call.
+    transformContext: createCompactionMemoizedTransform(summarizer, signal),
     shouldStopAfterTurn: ({ message }) => {
       lastTurnText = extractText(message);
       lastTurnHasTools = message.content.some((block) => block.type === 'toolCall');

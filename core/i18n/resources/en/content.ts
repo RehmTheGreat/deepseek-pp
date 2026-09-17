@@ -103,6 +103,7 @@ export const content = {
     codeRunnerUnavailable: 'Code runner unavailable',
     superseded: 'Superseded by your new message: this run was stopped and a new agent run is working on it.',
     midRunRefused: 'An agent is still running and this message cannot start a new agent run for it. To redirect the agent, click Stop in the agent panel, then send your message again.',
+    refusedToolTurn: 'Tools ran, but the assistant run could not continue.',
     subagentRunning: 'Subagent · step {step}',
     subagentComplete: 'Subagent complete · {steps} steps · {tools} tool calls',
     subagentError: 'Subagent failed · {steps} steps · {tools} tool calls',

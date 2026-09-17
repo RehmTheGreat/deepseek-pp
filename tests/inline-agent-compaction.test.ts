@@ -51,6 +51,7 @@ import {
   inlineAgentConvertToLlm,
   type InlineAgentCompactionSummarizer,
 } from '../core/inline-agent/pi/compaction';
+import { createCompactionMemoizedTransform } from '../core/inline-agent/pi/loop-adapter';
 
 // ---------------------------------------------------------------------------
 // Fixtures
@@ -111,20 +112,20 @@ interface FauxHarness {
   lastSummaryPrompt: () => string | undefined;
 }
 
-function createFauxSummarizer(): FauxHarness {
+function createFauxSummarizer(queuedResponses = 1): FauxHarness {
   const faux = fauxProvider();
   const models = createModels();
   models.setProvider(faux.provider);
   let lastPrompt: string | undefined;
-  faux.setResponses([
-    (context) => {
+  faux.setResponses(
+    Array.from({ length: queuedResponses }, (): FauxResponseStep => (context) => {
       const first = context.messages[0];
       lastPrompt = typeof first.content === 'string'
         ? first.content
         : first.content.map((block) => ('text' in block ? block.text : '')).join('');
       return fauxAssistantMessage('COMPACT SUMMARY');
-    },
-  ]);
+    }),
+  );
   const model = faux.models[0] as unknown as Model<Api>;
   return {
     summarizer: {
@@ -360,6 +361,131 @@ describe('compactInlineAgentContext', () => {
     }, new AbortController().signal);
 
     expect(outcome.messages).toBe(messages);
+    const entries = diagnosticLogBuffer.snapshot();
+    expect(entries.some((e) => e.level === 'warn' && e.source === 'inline-agent-compaction')).toBe(true);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Per-run compaction memo (review fix F1) + widened fail-open (review fix F2)
+// ---------------------------------------------------------------------------
+
+describe('createCompactionMemoizedTransform (per-run transformContext memo)', () => {
+  it('two consecutive post-threshold calls on the same context fire exactly ONE summary request', async () => {
+    // pi-agent-core applies transformContext to a per-call copy and never
+    // adopts it, so the SAME array arrives again on the next LLM call; the
+    // memo must serve the cached result instead of re-summarizing.
+    const faux = createFauxSummarizer(1);
+    const transform = createCompactionMemoizedTransform(
+      faux.summarizer,
+      new AbortController().signal,
+      { settings: SMALL_SETTINGS, contextWindowTokens: 1_000 },
+    );
+    const messages = loopTranscript();
+
+    const first = await transform(messages, new AbortController().signal);
+    const second = await transform(messages, new AbortController().signal);
+
+    expect(first).not.toBe(messages); // compaction fired on the first call
+    expect(second).toBe(first); // cached transformed array, no second request
+    expect(faux.callCount()).toBe(1);
+  });
+
+  it('a genuinely changed context (length or head) re-compacts', async () => {
+    const faux = createFauxSummarizer(2);
+    const transform = createCompactionMemoizedTransform(
+      faux.summarizer,
+      new AbortController().signal,
+      { settings: SMALL_SETTINGS, contextWindowTokens: 1_000 },
+    );
+    const messages = loopTranscript();
+
+    await transform(messages, new AbortController().signal);
+    // Tool results push onto the live source array — the context grew.
+    messages.push({
+      role: 'toolResult',
+      toolCallId: 'call-2',
+      toolName: 'memory_search',
+      content: [{ type: 'text', text: 'r2' }],
+      isError: false,
+      timestamp: 5_000,
+    } as AgentMessage);
+    const afterPush = await transform(messages, new AbortController().signal);
+    expect(afterPush[0].role).toBe('compactionSummary');
+    expect(faux.callCount()).toBe(2);
+
+    // A fresh array with the SAME length but a different head (new user turn
+    // / resumed run) is a different source — never served the stale memo.
+    const fresh = messages.map((message) => ({ ...message }));
+    await transform(fresh, new AbortController().signal);
+    expect(faux.callCount()).toBe(3);
+  });
+
+  it('under threshold: no summary requests, input reference returned, memo harmless', async () => {
+    const faux = createFauxSummarizer(1);
+    const transform = createCompactionMemoizedTransform(
+      faux.summarizer,
+      new AbortController().signal,
+      { settings: SMALL_SETTINGS, contextWindowTokens: 1_000 },
+    );
+    const messages: AgentMessage[] = [userMsg('hello'), assistantMsg('world')];
+
+    const first = await transform(messages, new AbortController().signal);
+    const second = await transform(messages, new AbortController().signal);
+
+    expect(first).toBe(messages);
+    expect(second).toBe(messages);
+    expect(faux.callCount()).toBe(0);
+  });
+
+  it('the memo is closure-local in-memory state: a new run re-compacts the same context', async () => {
+    // Per-run state dies with the run: a fresh closure never serves another
+    // run's cached transform (and nothing is persisted anywhere — the
+    // pi-storage-boundary suite stays the static guard).
+    const faux = createFauxSummarizer(2);
+    const messages = loopTranscript();
+    const firstRun = createCompactionMemoizedTransform(
+      faux.summarizer,
+      new AbortController().signal,
+      { settings: SMALL_SETTINGS, contextWindowTokens: 1_000 },
+    );
+    const secondRun = createCompactionMemoizedTransform(
+      faux.summarizer,
+      new AbortController().signal,
+      { settings: SMALL_SETTINGS, contextWindowTokens: 1_000 },
+    );
+
+    const first = await firstRun(messages, new AbortController().signal);
+    const second = await secondRun(messages, new AbortController().signal);
+
+    expect(first[0].role).toBe('compactionSummary');
+    expect(second[0].role).toBe('compactionSummary');
+    expect(faux.callCount()).toBe(2);
+  });
+});
+
+describe('widened fail-open over the compaction pipeline (review fix F2)', () => {
+  it('a NaN message timestamp fails open: input returned unchanged, no throw, warn logged', async () => {
+    // The SessionTreeEntry bridge renders `new Date(timestamp).toISOString()`,
+    // which throws RangeError on NaN. The transformContext contract is "must
+    // not throw or reject" — the WHOLE pipeline sits inside the fail-open.
+    const faux = createFauxSummarizer(1);
+    const messages = loopTranscript().map((message) => ({
+      ...message,
+      timestamp: Number.NaN,
+    })) as AgentMessage[];
+
+    const outcome = await compactInlineAgentContext({
+      messages,
+      timeoutMs: INLINE_AGENT_COMPACTION_TIMEOUT_MS,
+      summarizer: faux.summarizer,
+      settings: SMALL_SETTINGS,
+      contextWindowTokens: 1_000,
+    }, new AbortController().signal);
+
+    expect(outcome.messages).toBe(messages);
+    expect(outcome.result).toBeUndefined();
+    expect(faux.callCount()).toBe(0);
     const entries = diagnosticLogBuffer.snapshot();
     expect(entries.some((e) => e.level === 'warn' && e.source === 'inline-agent-compaction')).toBe(true);
   });

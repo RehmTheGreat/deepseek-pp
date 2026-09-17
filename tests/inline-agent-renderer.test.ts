@@ -8,6 +8,7 @@ import {
   collapseAllAgentToolGroups,
   createAgentChildConsole,
   createAgentContainer,
+  createAgentRefusedTurnRecord,
   createAgentStartingElement,
   createAgentStepElement,
   finalizePendingAgentToolEntries,
@@ -1220,5 +1221,67 @@ describe('restored agent console rendering (post-reload visibility parity)', () 
     // the measured property and a 14px fallback when measurement failed.
     expect(css).toContain('.dpp-agent-container[data-restored="true"] .dpp-agent-step-body');
     expect(css).toContain('font-size: var(--dpp-restored-body-font-size, 14px)');
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Refused tool-turn record (review fix F3): a turn whose tools executed but
+// whose loop start was refused (anchor-less bail / missing grant) still shows
+// what ran — persistent, non-interactive, in-DOM only.
+// ---------------------------------------------------------------------------
+
+describe('refused tool-turn record', () => {
+  afterEach(() => {
+    document.head.innerHTML = '';
+    document.body.innerHTML = '';
+  });
+
+  it('renders the header plus one name/status row per executed tool', () => {
+    const record = createAgentRefusedTurnRecord(
+      'Tools ran, but the assistant run could not continue.',
+      [
+        makeExecution('shell_exec', { ok: true, summary: 'ok' }),
+        makeExecution('web_search', { ok: false, summary: 'boom' }),
+      ],
+      streamLabels,
+    );
+
+    expect(record.className).toBe('dpp-agent-refused-record');
+    const header = record.querySelector('.dpp-agent-refused-record-header');
+    expect(header?.getAttribute('role')).toBe('status');
+    expect(header?.textContent).toBe('Tools ran, but the assistant run could not continue.');
+
+    const rows = record.querySelectorAll('.dpp-agent-refused-record-row');
+    expect(rows).toHaveLength(2);
+    expect(rows[0].getAttribute('data-tool-status')).toBe('ok');
+    expect(rows[0].querySelector('.dpp-agent-tool-name')?.textContent).toBe('shell_exec');
+    expect(rows[0].querySelector('.dpp-agent-tool-state')?.textContent).toBe('Executed');
+    expect(rows[1].getAttribute('data-tool-status')).toBe('err');
+    expect(rows[1].querySelector('.dpp-agent-tool-name')?.textContent).toBe('web_search');
+    expect(rows[1].querySelector('.dpp-agent-tool-state')?.textContent).toBe('Execution failed');
+  });
+
+  it('is non-interactive and carries none of the loop console controls', () => {
+    const record = createAgentRefusedTurnRecord(
+      'header',
+      [makeExecution('shell_exec', { ok: true, summary: 'ok' })],
+      streamLabels,
+    );
+
+    expect(record.querySelectorAll('button, a, [role="button"]')).toHaveLength(0);
+    // Reused row pattern WITHOUT the interactive detail toggle.
+    expect(record.querySelector('.dpp-agent-tool-toggle')).toBeNull();
+    expect(record.querySelector('.dpp-agent-tool-summary')).toBeNull();
+    // Never an agent console: the record cannot start, stop, or continue a loop.
+    expect(record.querySelector('.dpp-agent-stop-btn')).toBeNull();
+    expect(record.closest('.dpp-agent-container')).toBeNull();
+  });
+
+  it('ships its scoped styles with the injected stylesheet', () => {
+    injectInlineAgentStyles();
+    const css = document.getElementById('dpp-inline-agent-css')?.textContent ?? '';
+    expect(css).toContain('.dpp-agent-refused-record');
+    expect(css).toContain('.dpp-agent-refused-record-header');
+    expect(css).toContain('.dpp-agent-refused-record-row');
   });
 });

@@ -424,6 +424,33 @@ export function injectInlineAgentStyles(): void {
       white-space: pre-wrap;
       word-break: break-word;
     }
+    /* Refused tool-turn record: header plus read-only name/status rows for a
+       turn whose tools executed but whose loop start was refused. Non-
+       interactive by construction (no buttons/toggles) and in-DOM only. */
+    .dpp-agent-refused-record {
+      margin-top: 6px;
+    }
+    .dpp-agent-refused-record-header {
+      padding: 2px 0;
+      font-size: 12px;
+      line-height: 1.5;
+      color: var(--dpp-ui-text-muted);
+      white-space: pre-wrap;
+      word-break: break-word;
+    }
+    .dpp-agent-refused-record-tools {
+      display: flex;
+      flex-direction: column;
+    }
+    .dpp-agent-refused-record-row {
+      display: flex;
+      align-items: center;
+      gap: 6px;
+      width: 100%;
+      padding: 1px 0;
+      font-size: 12px;
+      color: var(--dpp-ui-text-muted);
+    }
     .dpp-agent-reasoning-note-toggle {
       display: flex;
       align-items: center;
@@ -1580,6 +1607,60 @@ export function appendAgentConsoleNotice(container: HTMLElement, text: string): 
   stream.appendChild(notice);
   followAgentStreamBottom(stream);
   return notice;
+}
+
+/**
+ * The refused tool-turn record (review fix F3): a turn whose tools executed
+ * but whose loop start was refused (anchor-less bail, missing grant) must
+ * still show what ran. A small persistent block styled after the structured
+ * work-log rows — header line plus one read-only name/status row per
+ * execution. NON-interactive by contract: no buttons, no detail toggles, no
+ * loop controls — it can never start, stop, or continue a run. In-DOM only:
+ * the traces/data layer stays the persistence authority and nothing here is
+ * ever written to storage.
+ */
+export function createAgentRefusedTurnRecord(
+  header: string,
+  executions: readonly ToolExecutionRecord[],
+  labels?: Partial<InlineAgentRendererLabels>,
+): HTMLElement {
+  const record = document.createElement('div');
+  record.className = 'dpp-agent-refused-record';
+
+  const heading = document.createElement('div');
+  heading.className = 'dpp-agent-refused-record-header';
+  heading.setAttribute('role', 'status');
+  heading.textContent = header;
+  record.appendChild(heading);
+
+  const list = document.createElement('div');
+  list.className = 'dpp-agent-refused-record-tools';
+  for (const execution of executions) {
+    const row = document.createElement('div');
+    row.className = 'dpp-agent-refused-record-row dpp-agent-tool-item';
+    row.setAttribute('data-tool-status', execution.result.ok ? 'ok' : 'err');
+
+    const icon = document.createElement('span');
+    icon.className = 'dpp-agent-tool-state-icon';
+    icon.setAttribute('aria-hidden', 'true');
+
+    const name = document.createElement('span');
+    name.className = 'dpp-agent-tool-name';
+    name.textContent = execution.name;
+
+    const state = document.createElement('span');
+    state.className = 'dpp-agent-tool-state';
+    state.textContent = execution.result.ok
+      ? (labels?.toolOk ?? 'OK')
+      : (labels?.toolError ?? 'Error');
+
+    row.appendChild(icon);
+    row.appendChild(name);
+    row.appendChild(state);
+    list.appendChild(row);
+  }
+  record.appendChild(list);
+  return record;
 }
 
 /**

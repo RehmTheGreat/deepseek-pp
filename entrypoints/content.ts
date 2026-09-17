@@ -160,6 +160,7 @@ import {
   updateAgentConsoleHeader,
   createAgentStartingElement,
   appendAgentConsoleNotice,
+  createAgentRefusedTurnRecord,
   isInlineAgentBudgetFinalText,
   createAgentChildConsole,
   mountAgentChildConsole,
@@ -4548,6 +4549,18 @@ async function startInlineAgentIfNeeded(
   // task (the loop's tool descriptors stay available).
   const startableExecutions = selectStartableToolExecutions(executions);
   if (startableExecutions.length === 0 && !superseding) return;
+  // Refused tool turns (review fix F3): with the UI-1 "called tools" block
+  // removed, a turn whose tools executed but that cannot anchor a fresh loop
+  // would otherwise vanish silently. The executed work still shows: a small
+  // persistent, NON-interactive record next to the turn's assistant message
+  // (in-DOM only — never persisted; the traces/data layer keeps the records).
+  if (startableExecutions.length > 0 && !canAnchorFreshLoop(complete)) {
+    mountRefusedToolTurnRecord(
+      complete,
+      startableExecutions,
+      contentT("content.agent.refusedToolTurn"),
+    );
+  }
   if (!canAnchorFreshLoop(complete)) return;
 
   const loopId = crypto.randomUUID();
@@ -4558,6 +4571,11 @@ async function startInlineAgentIfNeeded(
     // Don't fail silently: the user asked for agent work and the loop cannot
     // start without the tool authorization grant (Issue #544).
     showContentToast(contentT("content.agent.startFailed"), "warning");
+    mountRefusedToolTurnRecord(
+      complete,
+      startableExecutions,
+      contentT("content.agent.startFailed"),
+    );
     return;
   }
 
@@ -4685,6 +4703,35 @@ async function startInlineAgentIfNeeded(
 
   startAgentConsoleTimer();
   startOwnedInlineAgentLoop(payload);
+}
+
+/**
+ * Mounts the refused tool-turn record (review fix F3) next to the turn's
+ * assistant message: the i18n'd refusal header plus one read-only row per
+ * executed tool. Best-effort and in-DOM only — when the message cannot be
+ * located the record is skipped (nothing is lost: the turn's executions live
+ * on in the traces/data layer), and nothing is ever written to storage. The
+ * record carries no controls, so it can never start or continue a loop, and
+ * it is mounted ONLY from the two refusal paths above — never on a run that
+ * actually starts.
+ */
+function mountRefusedToolTurnRecord(
+  complete: ResponseCompletePayload,
+  executions: ToolExecutionRecord[],
+  header: string,
+): void {
+  if (executions.length === 0) return;
+  injectInlineAgentStyles();
+  const target = findInlineAgentLiveTarget(
+    complete,
+    getAssistantMessages(),
+    getInlineAgentAnchorContent(complete),
+  );
+  if (!target) return;
+  const host = getAssistantResponseHost(target);
+  host.appendChild(
+    createAgentRefusedTurnRecord(header, executions, getAgentRendererLabels()),
+  );
 }
 
 function startOwnedInlineAgentLoop(payload: InlineAgentStartPayload): void {

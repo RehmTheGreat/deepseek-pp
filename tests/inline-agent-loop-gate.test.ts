@@ -31,6 +31,11 @@ const GRANT_TOAST_BLOCK = [
   '    // Don\'t fail silently: the user asked for agent work and the loop cannot',
   '    // start without the tool authorization grant (Issue #544).',
   '    showContentToast(contentT("content.agent.startFailed"), "warning");',
+  '    mountRefusedToolTurnRecord(',
+  '      complete,',
+  '      startableExecutions,',
+  '      contentT("content.agent.startFailed"),',
+  '    );',
   '    return;',
   '  }',
 ].join('\n');
@@ -133,9 +138,11 @@ describe('content-script wiring of the loop gate (source contract)', () => {
 
     expect(supersedeStart).toBeGreaterThanOrEqual(0);
     expect(gateIndex).toBeGreaterThan(supersedeStart);
-    // Anchor-less turn: still the silent path (kept unchanged).
+    // Anchor-less turn: the guard stays the bail; the refused-turn record
+    // mounts just before it (review fix F3).
     expect(anchorIndex).toBeGreaterThan(gateIndex);
-    // Grant-less turn: the visible startFailed toast path (kept unchanged).
+    // Grant-less turn: the visible startFailed toast path, now with the
+    // refused-turn record too (review fix F3).
     expect(grantToastIndex).toBeGreaterThan(anchorIndex);
   });
 
@@ -158,6 +165,42 @@ describe('content-script wiring of the loop gate (source contract)', () => {
     expect(contentSource).toMatch(
       /projectToolDescriptorsForNativeSearch\(\s*authorization\.descriptors,/,
     );
+  });
+
+  it('refused tool turns show what executed on BOTH refusal paths (review fix F3)', () => {
+    // Anchor-less bail: the record (with its own header) mounts BEFORE the
+    // guard's silent return, so the executed tools are never invisible.
+    const anchorRecordIndex = contentSource.indexOf(
+      'contentT("content.agent.refusedToolTurn")',
+    );
+    expect(anchorRecordIndex).toBeGreaterThan(0);
+    expect(anchorRecordIndex).toBeLessThan(contentSource.indexOf(ANCHOR_GUARD));
+
+    // Grant-less bail: the record reuses the startFailed wording as its
+    // header (pinned by GRANT_TOAST_BLOCK above, toast kept).
+    expect(contentSource.indexOf(GRANT_TOAST_BLOCK)).toBeGreaterThan(
+      contentSource.indexOf(ANCHOR_GUARD),
+    );
+
+    // Exactly TWO call sites, both on refusal paths ahead of the run actually
+    // starting (the payload build / console mount): a turn that starts a loop
+    // NEVER renders a refused record.
+    const startMountIndex = contentSource.indexOf('injectInlineAgentStyles();');
+    const callOccurrences = contentSource.split('mountRefusedToolTurnRecord(').length - 1;
+    expect(callOccurrences).toBe(3); // two refusal calls + the helper declaration
+    const firstCall = contentSource.indexOf('mountRefusedToolTurnRecord(');
+    const secondCall = contentSource.indexOf('mountRefusedToolTurnRecord(', firstCall + 1);
+    expect(firstCall).toBeLessThan(startMountIndex);
+    expect(secondCall).toBeLessThan(startMountIndex);
+    const declaration = contentSource.indexOf('function mountRefusedToolTurnRecord(');
+    expect(declaration).toBeGreaterThan(startMountIndex);
+
+    // In-DOM only: the helper performs no storage writes of any kind.
+    const helper = contentSource.slice(declaration);
+    expect(helper).not.toMatch(/chrome\.storage|indexedDB|localStorage|sessionStorage/);
+    // Non-interactive and structured-UI consistent: the renderer record has
+    // its own suite; here the helper must mount through that primitive.
+    expect(helper).toContain('createAgentRefusedTurnRecord(');
   });
 });
 
