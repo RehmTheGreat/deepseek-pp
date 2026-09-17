@@ -27,9 +27,9 @@
  * shape; no page-injection template is involved either way.
  */
 import type { Api, AssistantMessage, Model, Message, ToolResultMessage } from '@earendil-works/pi-ai';
-import type { AgentMessage } from '@earendil-works/pi-agent-core';
 import type { StreamFn, AgentEvent, AgentLoopConfig } from '@earendil-works/pi-agent-core';
 import { runAgentLoop } from '@earendil-works/pi-agent-core';
+import { compactInlineAgentContext, inlineAgentConvertToLlm, type InlineAgentCompactionSummarizer } from './compaction';
 import { DEFAULT_LOCALE, translate, type SupportedLocale } from '../../i18n';
 import type { ToolCall, ToolDescriptor, ToolError, ToolExecutionRecord, ToolProviderIdentity } from '../../types';
 import { createClientHeaders } from '../../deepseek/adapter';
@@ -38,6 +38,7 @@ import { getOfficialApiChatConfig } from '../../chat/official-api-config';
 import { createDeepSeekTurnSubmitter, isDeepSeekInterruptedTurnError } from './deepseek-stream-fn';
 import { createDeepSeekWebProvider, deepSeekWebProviderToStreamFn } from './deepseek-web-provider';
 import { createDeepSeekApiProvider, createDeepSeekApiMessageMapper, deepSeekApiProviderToStreamFn } from './official-api-provider';
+import { DEEPSEEK_API } from './official-api-port';
 import type { DeepSeekSessionState, DeepSeekStreamFnDeps, DeepSeekToolCallMapper } from './stream-fn-port';
 import {
   createPiAgentTools,
@@ -59,7 +60,7 @@ import type {
   InlineAgentStreamChunkMsg,
   InlineAgentToolDetectedMsg,
 } from '../types';
-import { INLINE_AGENT_MAX_RESUMES, INLINE_AGENT_MAX_STEPS } from '../types';
+import { INLINE_AGENT_COMPACTION_TIMEOUT_MS, INLINE_AGENT_MAX_RESUMES, INLINE_AGENT_MAX_STEPS } from '../types';
 import { waitBetweenDeepSeekRequests } from '../step-control';
 
 export type PostFn = (type: string, data: unknown) => void;
@@ -233,6 +234,16 @@ export async function runPiInlineAgentLoop(deps: PiLoopAdapterDeps): Promise<voi
 
   let streamFn: StreamFn;
   let model: Model<Api>;
+  // Autocompact (Task 5): the summary request rides the loop's OWN
+  // provider/model — one model-selection authority. The narrow
+  // `completeSimple` port (lifted to the package `Models` surface inside the
+  // compaction module) delegates straight to this run's provider, exactly
+  // like the loop's own requests. The web backend has NO summarizer: its
+  // stream surface is chain-bound (`serializePrompt` in deepseek-stream-fn
+  // builds continuation bytes, never the passed context), so a package
+  // summary request could never reach the model there — and the web
+  // per-turn wire bytes are bounded by design (nothing to compact away).
+  let summarizer: InlineAgentCompactionSummarizer | null = null;
   if (backend === 'official-api') {
     // B2: official API backend. No page chain: the pi Context transcript is
     // the chain (fail-closed checks in beforeToolCall/shouldStopAfterTurn
@@ -247,6 +258,13 @@ export async function runPiInlineAgentLoop(deps: PiLoopAdapterDeps): Promise<voi
     });
     model = provider.getModels()[0];
     streamFn = deepSeekApiProviderToStreamFn(provider);
+    summarizer = {
+      model,
+      completeSimple: (summaryModel, context, options) =>
+        // Same type-level widening as `deepSeekApiProviderToStreamFn`: the
+        // runtime model is always the provider's own catalog entry.
+        provider.streamSimple(summaryModel as Model<typeof DEEPSEEK_API>, context, options).result(),
+    };
   } else {
     const submitter = createDeepSeekTurnSubmitter({ powWasmUrl });
     const streamFnDeps = {
@@ -341,8 +359,25 @@ export async function runPiInlineAgentLoop(deps: PiLoopAdapterDeps): Promise<voi
   const config: AgentLoopConfig = {
     model,
     toolExecution: 'sequential',
-    convertToLlm: (messages: AgentMessage[]): Message[] =>
-      messages.filter((m) => m.role === 'user' || m.role === 'assistant' || m.role === 'toolResult'),
+    // Released pass-through for user/assistant/toolResult plus the package
+    // rendering for compaction summaries (byte-identical for contexts
+    // without one — see `inlineAgentConvertToLlm`).
+    convertToLlm: inlineAgentConvertToLlm,
+    // Autocompact (Task 5): token-efficient long loops. Runs before EVERY
+    // LLM call on both backends; under the threshold it returns the input
+    // array untouched (no prompt-byte change). Fail-open by contract: any
+    // compaction failure logs to the in-memory diagnostic buffer and returns
+    // the messages unchanged — the run can never break or stall on it. The
+    // summarizer is null on the web backend (chain-bound stream surface), so
+    // compaction is decision-free there today.
+    transformContext: async (messages, transformSignal) => {
+      const outcome = await compactInlineAgentContext({
+        messages,
+        timeoutMs: INLINE_AGENT_COMPACTION_TIMEOUT_MS,
+        summarizer,
+      }, transformSignal ?? signal);
+      return outcome.messages;
+    },
     shouldStopAfterTurn: ({ message }) => {
       lastTurnText = extractText(message);
       lastTurnHasTools = message.content.some((block) => block.type === 'toolCall');

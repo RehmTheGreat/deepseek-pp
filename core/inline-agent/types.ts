@@ -183,6 +183,19 @@ export const INLINE_AGENT_STEP_TIMEOUT_MS = 120_000;
 export const INLINE_AGENT_TOOL_CALL_TIMEOUT_MS = 180_000;
 export const INLINE_AGENT_REQUEST_DELAY_MIN_MS = 2_500;
 export const INLINE_AGENT_REQUEST_DELAY_MAX_MS = 6_500;
+// Autocompact (uniform-tools Task 5): the summarization request is a full
+// completion over the compacted prefix, so it gets the same budget as a
+// stream step (INLINE_AGENT_STEP_TIMEOUT_MS). Bounded + fail-open: a hung
+// summary request must never stall the loop.
+export const INLINE_AGENT_COMPACTION_TIMEOUT_MS = 120_000;
+// Autocompact trigger window for `shouldCompact`. Both pi-ai provider
+// catalogs in this app report `contextWindow: 0` (no honest per-model value
+// exists), so a conservative named floor is used instead: it must stay well
+// above DEFAULT_COMPACTION_SETTINGS.reserveTokens (16384) so the threshold
+// `window - reserve` remains positive and meaningful. 64k is the
+// conservative common denominator of the DeepSeek chat contexts — the
+// official API accepts more, so this compacts early rather than late.
+export const INLINE_AGENT_COMPACTION_CONTEXT_WINDOW_TOKENS = 65_536;
 // Subagent caps (P1, decided design): depth is fixed at 1 level (children
 // never spawn grandchildren). CONCURRENT bounds how many child runs may be
 // live at once per parent run; PER_RUN bounds the total spawns across the

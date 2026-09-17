@@ -47,6 +47,16 @@
 //     the SKILL.md parser is co-located in the 968-line local-importer
 //     module, hence the ~32.6K raw increment — no pi harness/FileSystem/Shell
 //     dependency enters; calibrated 2026-08-05, B3-T4)
+//   - rolldown provider probe + autocompact (minified): 457,443 raw /
+//     158,941 gzip (uniform-tools Task 5, measured 2026-09-17: the loop
+//     adapter wires pi-agent-core compaction (prepareCompaction → compact →
+//     compactionSummary rendering) into transformContext; the package
+//     compaction module + harness messages/session graph adds ~10.0K raw /
+//     ~6.6K gzip over the B3 surface. The narrow completeSimple summarizer
+//     port keeps the pi-ai createModels auth tree OUT of the graph — the
+//     adapter probe stays within its existing budget. This recalibration
+//     also absorbs a pre-existing 338-byte gzip drift already present on
+//     the branch before Task 5.)
 //   - esbuild pi-only probe (minified): 213,749 raw / 59,616 gzip (more
 //     conservative retention; kept for reference)
 //   - Budgets allow ~13-32% raw / ~14-37% gzip headroom over the measured
@@ -85,8 +95,12 @@ const PI_PROBE_RAW_MAX = 230_000;
 const PI_PROBE_GZIP_MAX = 72_000;
 const ADAPTER_PROBE_RAW_MAX = 430_000;
 const ADAPTER_PROBE_GZIP_MAX = 145_000;
-const PROVIDER_PROBE_RAW_MAX = 450_000;
-const PROVIDER_PROBE_GZIP_MAX = 152_000;
+// Uniform-tools Task 5 (2026-09-17): raised for the autocompact surface —
+// measured provider probe 457,443 raw / 158,941 gzip (see calibration note
+// above); ~2.7% raw / ~3.2% gzip headroom kept, matching the tightest
+// pre-existing ratios.
+const PROVIDER_PROBE_RAW_MAX = 470_000;
+const PROVIDER_PROBE_GZIP_MAX = 164_000;
 
 const PI_CORE_DIR = resolve(rootDir, 'node_modules/@earendil-works/pi-agent-core');
 
