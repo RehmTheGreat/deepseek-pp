@@ -5,10 +5,10 @@
  * message, and matching must look only at the message's own visible text.
  * Two failure modes are guarded here:
  *
- * 1. Extension-injected UI (agent console timeline, final-answer area, tool
- *    blocks) lives inside the host message, so naive `textContent` matching
- *    let a message that already hosts a console match nearly every follow-up
- *    run — the new console then mounted under the PREVIOUS run's message.
+ * 1. Extension-injected UI (agent console timeline, final-answer area) lives
+ *    inside the host message, so naive `textContent` matching let a message
+ *    that already hosts a console match nearly every follow-up run — the new
+ *    console then mounted under the PREVIOUS run's message.
  * 2. First-match-wins scanning preferred the oldest message; a new run's
  *    anchor is always the most recent one.
  */
@@ -18,12 +18,12 @@
  * under these nodes is renderer output, never message content.
  */
 export const EXTENSION_INJECTED_MESSAGE_UI_SELECTOR =
-  '.dpp-agent-container, [data-dpp-body-text], .dpp-tool-block, .dpp-agent-autosave-note';
+  '.dpp-agent-container, [data-dpp-body-text], .dpp-agent-autosave-note';
 
 /**
  * The message's own visible text with every extension-injected UI subtree
  * excluded, so content-snippet anchoring can never be poisoned by our own
- * rendered console/answer/tool text.
+ * rendered console/answer text.
  */
 export function getAssistantMessageOwnText(message: Element): string {
   const parts: string[] = [];

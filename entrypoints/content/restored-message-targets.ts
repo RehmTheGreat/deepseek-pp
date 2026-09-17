@@ -1,5 +1,4 @@
 const RESTORED_EXTENSION_UI_SELECTOR = [
-  '.dpp-tool-block',
   '.dpp-agent-container',
   '.dpp-artifact-results',
 ].join(', ');

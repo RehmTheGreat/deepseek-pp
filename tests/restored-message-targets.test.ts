@@ -29,15 +29,15 @@ describe('restored message target mutations', () => {
   it('ignores extension-owned restored UI so rendering does not reschedule itself', () => {
     const message = document.createElement('article');
     message.className = 'ds-message';
-    const toolBlock = document.createElement('div');
-    toolBlock.className = 'dpp-tool-block';
-    const toolItem = document.createElement('span');
-    toolBlock.appendChild(toolItem);
-    message.appendChild(toolBlock);
+    const artifactResults = document.createElement('div');
+    artifactResults.className = 'dpp-artifact-results';
+    const artifactItem = document.createElement('span');
+    artifactResults.appendChild(artifactItem);
+    message.appendChild(artifactResults);
 
-    expect(mutationMayAffectRestoredMessageTarget(childListMutation(message, toolBlock)))
+    expect(mutationMayAffectRestoredMessageTarget(childListMutation(message, artifactResults)))
       .toBe(false);
-    expect(mutationMayAffectRestoredMessageTarget(childListMutation(toolBlock, toolItem)))
+    expect(mutationMayAffectRestoredMessageTarget(childListMutation(artifactResults, artifactItem)))
       .toBe(false);
   });
 
@@ -49,14 +49,14 @@ describe('restored message target mutations', () => {
 
     expect(getRestoredMessageMutationAction([characterDataMutation(text)], {
       hasPendingRecords: false,
-      restoredUiSelector: '.dpp-tool-block',
+      restoredUiSelector: '.dpp-artifact-results',
     })).toEqual({
       requeueMountedRecords: false,
       schedulePendingRender: false,
     });
     expect(getRestoredMessageMutationAction([characterDataMutation(text)], {
       hasPendingRecords: true,
-      restoredUiSelector: '.dpp-tool-block',
+      restoredUiSelector: '.dpp-artifact-results',
     })).toEqual({
       requeueMountedRecords: false,
       schedulePendingRender: true,
@@ -66,19 +66,19 @@ describe('restored message target mutations', () => {
   it('requeues records when a message remounts or restored UI is removed', () => {
     const message = document.createElement('article');
     message.className = 'ds-message';
-    const toolBlock = document.createElement('div');
-    toolBlock.className = 'dpp-tool-block';
+    const artifactResults = document.createElement('div');
+    artifactResults.className = 'dpp-artifact-results';
 
     expect(getRestoredMessageMutationAction([childListMutation(document.body, message)], {
       hasPendingRecords: false,
-      restoredUiSelector: '.dpp-tool-block',
+      restoredUiSelector: '.dpp-artifact-results',
     })).toEqual({
       requeueMountedRecords: true,
       schedulePendingRender: true,
     });
-    expect(getRestoredMessageMutationAction([childListMutation(message, [], [toolBlock])], {
+    expect(getRestoredMessageMutationAction([childListMutation(message, [], [artifactResults])], {
       hasPendingRecords: false,
-      restoredUiSelector: '.dpp-tool-block',
+      restoredUiSelector: '.dpp-artifact-results',
     })).toEqual({
       requeueMountedRecords: true,
       schedulePendingRender: true,

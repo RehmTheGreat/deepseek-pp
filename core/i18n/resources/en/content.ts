@@ -61,14 +61,7 @@ export const content = {
     },
   },
   toolBlock: {
-    title: 'Called tools ({count})',
-    pythonInterpreter: 'Python interpreter',
     summaries: {
-      saved: 'Saved',
-      updated: 'Updated',
-      deleted: 'Deleted',
-      searched: 'Searched',
-      fetched: 'Fetched',
       running: 'Running',
       executed: 'Executed',
       failed: 'Execution failed',

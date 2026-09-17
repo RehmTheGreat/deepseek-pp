@@ -51,7 +51,9 @@ describe('Content controller ownership contract', () => {
 
   it('removes capability-owned transient UI and resolves permission waits during teardown', () => {
     expect(contentSource).toContain('finishActivePermissionRequest(false);');
-    expect(contentSource).toMatch(/document\s*\.querySelectorAll\([\"']\.dpp-tool-block, \.dpp-artifact-results[\"']\)/);
+    expect(contentSource).toMatch(
+      /document\s*\.querySelectorAll\([\"']\.dpp-artifact-results[\"']\)/,
+    );
     expect(contentSource).toContain('removeInlineAgentStyles();');
     expect(contentSource).toMatch(/document\s*\.querySelectorAll\([\"']\[data-dpp-transparent\][\"']\)/);
   });

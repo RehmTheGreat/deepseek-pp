@@ -69,7 +69,6 @@ import {
   containsInternalPromptMarker,
   sanitizeInternalPromptText,
 } from "../core/prompt";
-import { createRestoredArtifactToolResult } from "../core/artifact";
 import {
   type ResponseCompletePayload,
   type ResponseTokenSpeedPayload,
@@ -184,7 +183,6 @@ import {
 } from "../core/i18n/store";
 import {
   registerDefaultToolResultRenderers,
-  renderToolResultWithRegistry,
 } from "../core/ui/tool-result-renderer";
 import { injectInjectedThemeStyles } from "../core/ui/injected-theme";
 import {
@@ -290,9 +288,6 @@ import {
   type BrowserDownloadManager,
 } from "./content/download-manager";
 
-const TOOL_BLOCK_ID = "dpp-tool-block";
-const TOOL_BLOCK_STYLE_ID = "dpp-tool-block-css";
-const RESTORED_TOOL_UI_SELECTOR = ".dpp-tool-block, .dpp-artifact-results";
 const RESTORED_INLINE_AGENT_UI_SELECTOR =
   '.dpp-agent-container[data-restored="true"]';
 const ASSISTANT_RESPONSE_CONTENT_SELECTOR =
@@ -464,7 +459,6 @@ interface PendingMultimodalMedia {
 }
 
 let toolExecutions: ToolExecutionRecord[] = [];
-let toolBlockEl: HTMLElement | null = null;
 let activeToolBlockSessionId: string | null = null;
 let activeStreamingToolCount = 0;
 const activeToolBlockSessions = new Map<string, ActiveToolBlockSession>();
@@ -520,9 +514,6 @@ let historyOrganizerController: HistoryOrganizerController | null = null;
 let projectSidebarOrganizerController: ProjectSidebarOrganizerController | null =
   null;
 const restoredToolRecords = new Map<string, ToolCallRestoreRecord>();
-const pendingRestoredToolRecordIds = new Set<string>();
-let restoredRenderTimer: ReturnType<typeof setTimeout> | null = null;
-let restoredRenderAttempts = 0;
 const pendingToolExecutionTasks = new Set<Promise<ToolCardResult>>();
 let themeObserver: MutationObserver | null = null;
 let themeTreeObserver: MutationObserver | null = null;
@@ -662,10 +653,6 @@ function refreshLocalizedContentSurfaces(): void {
   projectSidebarOrganizerController?.refreshLabels();
   if (tokenSpeedCapabilityScope?.active)
     renderTokenSpeedIndicator(lastTokenSpeedProgress);
-  if (toolCapabilityScope?.active) {
-    renderActiveToolBlockForCurrentRoute();
-    scheduleRenderRestoredToolBlocks();
-  }
   if (inlineAgentCapabilityScope?.active)
     scheduleRenderRestoredInlineAgentTraces();
   if (multimodalCapabilityScope?.active) renderMultimodalMediaTray();
@@ -1107,10 +1094,6 @@ async function stopToolCapability(): Promise<void> {
   toolBlockRouteKey = "";
   stopRenderedToolCallCleaner();
   finishActivePermissionRequest(false);
-  if (restoredRenderTimer) {
-    clearTimeout(restoredRenderTimer);
-    restoredRenderTimer = null;
-  }
   const errors: unknown[] = [];
   pendingToolAuthorizationCorrelations.terminateAll();
   try {
@@ -1134,10 +1117,8 @@ async function stopToolCapability(): Promise<void> {
   activeStreamingToolCount = 0;
   activeToolBlockSessionId = null;
   toolExecutions = [];
-  toolBlockEl = null;
   activeToolBlockSessions.clear();
   restoredToolRecords.clear();
-  pendingRestoredToolRecordIds.clear();
   activeToolAuthorizations.clear();
   toolAuthorizationRequestAliases.clear();
   inlineAgentAuthorizationRequestKeys.clear();
@@ -1145,12 +1126,10 @@ async function stopToolCapability(): Promise<void> {
   regenerateAuthorizationScopes.clear();
   pendingExternalToolPayloadWrites.clear();
   pendingToolExecutionTasksByRequest.clear();
-  restoredRenderAttempts = 0;
   document
-    .querySelectorAll(".dpp-tool-block, .dpp-artifact-results")
+    .querySelectorAll(".dpp-artifact-results")
     .forEach((node) => node.remove());
   document.getElementById(PERMISSION_BANNER_STYLE_ID)?.remove();
-  document.getElementById(TOOL_BLOCK_STYLE_ID)?.remove();
   if (errors.length > 0) {
     throw new AggregateError(
       errors,
@@ -1387,15 +1366,10 @@ async function dispatchMainWorldMessage(
           : [...toolExecutions];
         if (session && session.executions.length > 0) {
           await persistToolBlockSession(session, complete.text, complete);
-          const renderedBlock =
-            (findRestoredToolBlock(session.id) as HTMLElement | null) ??
-            toolBlockEl;
-          collapseToolBlock(renderedBlock);
           activeToolBlockSessions.delete(session.id);
           if (activeToolBlockSessionId === session.id) {
             activeToolBlockSessionId = null;
             toolExecutions = [];
-            toolBlockEl = null;
           }
         } else if (toolExecutions.length > 0) {
           const fallbackSession = getCurrentRouteActiveToolBlockSession();
@@ -1405,9 +1379,7 @@ async function dispatchMainWorldMessage(
               complete.text,
               complete,
             );
-          collapseToolBlock(toolBlockEl);
           toolExecutions = [];
-          toolBlockEl = null;
         }
         void startInlineAgentIfNeeded(complete, completedExecutions);
         schedulePetIdle();
@@ -1944,7 +1916,6 @@ function extractVisibleUserMessageText(message: HTMLElement): string {
         '[class*="dpp-"]',
         "[data-dpp-agent]",
         "[data-dpp-body-text]",
-        "[data-dpp-tool-key]",
         "button",
         '[role="button"]',
       ].join(","),
@@ -2425,7 +2396,7 @@ function isOfficialActionControlCandidate(
 ): boolean {
   if (control.classList.contains(EXPORT_ACTION_CLASS)) return false;
   if (responseHost.contains(control)) return false;
-  if (control.closest(".dpp-tool-block, .dpp-agent-container")) return false;
+  if (control.closest(".dpp-agent-container")) return false;
   if (!isVisibleElement(control)) return false;
 
   const rect = control.getBoundingClientRect();
@@ -2480,7 +2451,7 @@ function findGlobalAssistantActionRows(): HTMLElement[] {
 
 function isGlobalActionControlCandidate(control: HTMLElement): boolean {
   if (control.classList.contains(EXPORT_ACTION_CLASS)) return false;
-  if (control.closest(".dpp-tool-block, .dpp-agent-container")) return false;
+  if (control.closest(".dpp-agent-container")) return false;
   if (
     control.closest('aside, nav, header, [role="navigation"], [role="banner"]')
   )
@@ -4684,14 +4655,10 @@ async function startInlineAgentIfNeeded(
   container.setAttribute("data-dpp-agent-trace-key", activeInlineAgentTrace.id);
   mountInlineAgentContainer(target, container);
 
-  // The agent flow now owns the tool presentation of the run record: the
-  // old-style collapsible tool block (and detached artifact cards) of the
-  // first native turn are removed from the anchor message, and that turn's
-  // executions render as the first NEW-style tool group inside the agent
-  // stream — the run reads as one flow and the tool count is neither lost
-  // nor duplicated. ALL completed first-turn executions are shown (not only
-  // the continuable subset), matching the legacy block's coverage.
-  removeToolBlockFromMessage(target);
+  // The structured agent flow is the single tool-call presentation: the
+  // trigger turn's executions render as the first NEW-style tool group inside
+  // the agent stream — the run reads as one flow. ALL completed first-turn
+  // executions are shown (not only the continuable subset).
   const stream = getAgentConsoleBody(container);
   const initialExecutions = executions.filter(
     (execution) => !execution.pending,
@@ -5098,25 +5065,6 @@ function mountInlineAgentContainer(
     childList: true,
     subtree: true,
   });
-}
-
-/**
- * Removes the old-style tool presentation (collapsible `.dpp-tool-block` +
- * detached `.dpp-artifact-results` cards) from a message's response host.
- * Called when an inline agent takes over the run record: the first native
- * turn's tools then render as the agent flow's first tool group, so the
- * record never shows both the legacy block and the new-style group for the
- * same executions.
- */
-function removeToolBlockFromMessage(message: Element): void {
-  const responseHost = getAssistantResponseHost(message);
-  for (const node of Array.from(
-    responseHost.querySelectorAll<HTMLElement>(
-      ":scope > .dpp-tool-block, :scope > .dpp-artifact-results",
-    ),
-  )) {
-    node.remove();
-  }
 }
 
 function findInlineAgentLiveTarget(
@@ -6040,7 +5988,6 @@ function runToolExecution(call: ToolCall): Promise<ToolCardResult> {
       session.executions.push(execution);
       activeToolBlockSessionId = session.id;
       toolExecutions = session.executions;
-      renderToolBlock(session);
       observeReportedPersistence(persistToolBlockSession(session));
       showPetResult(result);
       return result;
@@ -6123,7 +6070,6 @@ function showPendingToolExecution(call: ToolCall): void {
   toolExecutions = session.executions;
   setPetState("working");
   activeStreamingToolCount++;
-  renderToolBlock(session, { skipCleanup: true });
 }
 
 function removePendingToolExecution(
@@ -6201,7 +6147,6 @@ async function finalizePendingToolStarts(
     activeStreamingToolCount = Math.max(0, activeStreamingToolCount - 1);
     activeToolBlockSessionId = session.id;
     toolExecutions = session.executions;
-    renderToolBlock(session);
     await persistToolBlockSession(session);
     showPetResult(result);
   }
@@ -6539,19 +6484,10 @@ function handleToolBlockRouteChange() {
   if (nextRouteKey === toolBlockRouteKey) return;
   toolBlockRouteKey = nextRouteKey;
   restoredToolRecords.clear();
-  pendingRestoredToolRecordIds.clear();
   restoredInlineAgentTraces.clear();
   pendingRestoredInlineAgentTraceIds.clear();
-  restoredRenderAttempts = 0;
   restoredInlineAgentRenderAttempts = 0;
 
-  const activeSession = getActiveToolBlockSession();
-  if (activeSession && !isToolBlockSessionOnCurrentRoute(activeSession)) {
-    toolBlockEl = null;
-    toolExecutions = [];
-  }
-
-  renderActiveToolBlockForCurrentRoute();
   const scope = toolCapabilityScope;
   if (scope) {
     const epoch = ++toolCapabilityEpoch;
@@ -6564,7 +6500,6 @@ function handleToolBlockRouteChange() {
       restorePersistedInlineAgentTraces(inlineScope, epoch),
     );
   }
-  scheduleRenderRestoredToolBlocks();
 }
 
 function handleContentNavigation(): void {
@@ -7256,8 +7191,6 @@ async function persistToolBlockSession(
   );
   if (toolCapabilityScope?.active) {
     restoredToolRecords.set(block.id, block);
-    pendingRestoredToolRecordIds.add(block.id);
-    scheduleRenderRestoredToolBlocks();
   }
 }
 
@@ -7360,19 +7293,16 @@ function rememberRestoredToolRecords(
         compatibleId,
         mergeToolRestoreRecords(existing, record),
       );
-      pendingRestoredToolRecordIds.add(compatibleId);
       changed = true;
       continue;
     }
 
     if (restoredToolRecords.has(record.id)) continue;
     restoredToolRecords.set(record.id, record);
-    pendingRestoredToolRecordIds.add(record.id);
     changed = true;
   }
 
   if (changed) {
-    scheduleRenderRestoredToolBlocks();
     scheduleRenderRestoredInlineAgentTraces();
   }
 }
@@ -7932,461 +7862,12 @@ function escapeHtml(text: string): string {
   return div.innerHTML;
 }
 
-// --- Tool execution collapsible block, aligned with the host reasoning block style. ---
-
-function injectToolBlockStyles() {
-  injectInjectedThemeStyles();
-  if (document.getElementById(TOOL_BLOCK_STYLE_ID)) return;
-  const style = document.createElement("style");
-  style.id = TOOL_BLOCK_STYLE_ID;
-  style.textContent = `
-    .dpp-tool-block {
-      margin-top: 8px;
-    }
-    .dpp-artifact-results {
-      margin-top: 10px;
-      display: flex;
-      flex-direction: column;
-      gap: 8px;
-    }
-    .dpp-artifact-results:empty {
-      display: none;
-    }
-    .dpp-tool-block-header {
-      display: flex;
-      align-items: center;
-      gap: 4px;
-      cursor: pointer;
-      user-select: none;
-      color: var(--dpp-ui-text-muted);
-      font-size: 12px;
-      line-height: 18px;
-    }
-    .dpp-tool-block-header:hover {
-      color: var(--dpp-ui-text);
-    }
-    .dpp-tool-block-icon {
-      width: 16px;
-      height: 16px;
-      color: var(--dpp-ui-accent);
-      flex-shrink: 0;
-    }
-    .dpp-tool-block-title {
-      font-weight: 500;
-      color: inherit;
-    }
-    .dpp-tool-block-chevron {
-      width: 12px;
-      height: 12px;
-      color: inherit;
-      transition: transform 0.2s ease;
-      margin-left: 2px;
-    }
-    .dpp-tool-block[data-collapsed="true"] .dpp-tool-block-chevron {
-      transform: rotate(-90deg);
-    }
-    .dpp-tool-block-body {
-      overflow: hidden;
-      transition: max-height 0.25s ease, opacity 0.2s ease;
-      max-height: 500px;
-      opacity: 1;
-      padding-left: 20px;
-      margin-top: 6px;
-    }
-    .dpp-tool-block[data-collapsed="true"] .dpp-tool-block-body {
-      max-height: 0;
-      opacity: 0;
-      margin-top: 0;
-    }
-    .dpp-tool-block-item {
-      display: flex;
-      align-items: center;
-      gap: 8px;
-      padding: 5px 8px;
-      margin: 2px 0;
-      border: 1px solid var(--dpp-ui-border-muted);
-      border-radius: 8px;
-      background: var(--dpp-ui-surface-muted);
-      font-size: 13px;
-      color: var(--dpp-ui-text);
-      line-height: 1.5;
-    }
-    .dpp-tool-block-dot {
-      flex: none;
-      width: 6px;
-      height: 6px;
-      border-radius: 50%;
-      background: var(--dpp-ui-accent);
-    }
-    .dpp-tool-block-item-text {
-      flex: 1;
-      min-width: 0;
-    }
-    .dpp-tool-block-item-name {
-      font-family: 'SF Mono', Monaco, Menlo, Consolas, monospace;
-      font-size: 12px;
-      color: var(--dpp-ui-accent);
-    }
-    .dpp-tool-block-item-status {
-      color: var(--dpp-ui-success);
-      margin-left: 6px;
-    }
-    .dpp-tool-block-item-status.error {
-      color: var(--dpp-ui-error);
-    }
-    .dpp-tool-block-item-detail {
-      margin-top: 4px;
-      padding: 6px 8px;
-      max-height: min(52vh, 420px);
-      border-radius: 8px;
-      background: var(--dpp-ui-accent-panel);
-      color: var(--dpp-ui-text-muted);
-      font-family: 'SF Mono', Monaco, Menlo, Consolas, monospace;
-      font-size: 12px;
-      line-height: 1.45;
-      white-space: pre-wrap;
-      overflow: auto;
-      overflow-wrap: anywhere;
-      overscroll-behavior: contain;
-    }
-    .dpp-manual-continuation {
-      margin: 10px 0 0 20px;
-      padding: 10px 12px;
-      border-left: 2px solid var(--dpp-ui-accent);
-      border-radius: 6px;
-      background: var(--dpp-ui-accent-panel);
-      color: var(--dpp-ui-text);
-      font-size: 14px;
-      line-height: 1.65;
-    }
-    .dpp-manual-continuation.error {
-      border-left-color: var(--dpp-ui-error);
-      background: var(--dpp-ui-danger-panel);
-    }
-    .dpp-manual-continuation-title {
-      margin-bottom: 6px;
-      color: var(--dpp-ui-accent);
-      font-size: 12px;
-      font-weight: 600;
-    }
-    .dpp-manual-continuation.error .dpp-manual-continuation-title {
-      color: var(--dpp-ui-error);
-    }
-    .dpp-manual-continuation-content {
-      white-space: pre-wrap;
-      overflow-wrap: anywhere;
-    }
-  `;
-  document.head.appendChild(style);
-}
-
-function createToolBlockShell(options?: {
-  id?: string;
-  restoreId?: string;
-  collapsed?: boolean;
-}): HTMLElement {
-  const block = document.createElement("div");
-  if (options?.id) block.id = options.id;
-  if (options?.restoreId)
-    block.setAttribute("data-dpp-tool-key", options.restoreId);
-  block.className = "dpp-tool-block";
-  block.setAttribute("data-collapsed", options?.collapsed ? "true" : "false");
-  block.innerHTML = `
-    <div class="dpp-tool-block-header">
-      <svg class="dpp-tool-block-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M14.7 6.3a1 1 0 0 0 0 1.4l1.6 1.6a1 1 0 0 0 1.4 0l3.77-3.77a6 6 0 0 1-7.94 7.94l-6.91 6.91a2.12 2.12 0 0 1-3-3l6.91-6.91a6 6 0 0 1 7.94-7.94l-3.76 3.76z"/></svg>
-      <span class="dpp-tool-block-title"></span>
-      <svg class="dpp-tool-block-chevron" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><polyline points="6 9 12 15 18 9"/></svg>
-    </div>
-    <div class="dpp-tool-block-body"></div>
-  `;
-
-  block
-    .querySelector(".dpp-tool-block-header")!
-    .addEventListener("click", () => {
-      const collapsed = block.getAttribute("data-collapsed") === "true";
-      block.setAttribute("data-collapsed", collapsed ? "false" : "true");
-    });
-
-  return block;
-}
-
-function updateToolBlockContent(
-  block: HTMLElement,
-  executions: ToolExecutionRecord[],
-) {
-  const count = executions.length;
-  const title = block.querySelector(".dpp-tool-block-title")!;
-  title.textContent = contentT("content.toolBlock.title", { count });
-
-  const body = block.querySelector(".dpp-tool-block-body")!;
-  body.innerHTML = "";
-  for (const exec of executions) {
-    const item = document.createElement("div");
-    item.className = "dpp-tool-block-item";
-    item.innerHTML = `
-      <div class="dpp-tool-block-dot"></div>
-      <div class="dpp-tool-block-item-text">
-        <div>
-          <span class="dpp-tool-block-item-name"></span>
-          <span class="dpp-tool-block-item-status ${exec.result.ok ? "" : "error"}"></span>
-        </div>
-      </div>
-    `;
-    const nameEl = item.querySelector(".dpp-tool-block-item-name")!;
-    const statusEl = item.querySelector(".dpp-tool-block-item-status")!;
-    nameEl.textContent = formatToolExecutionName(exec);
-    statusEl.textContent = exec.result.summary;
-    const detail = formatToolResultDetail(exec.result);
-    if (detail) {
-      const detailEl = document.createElement("div");
-      detailEl.className = "dpp-tool-block-item-detail";
-      const rendered = isDetachedArtifactToolResult(exec.result)
-        ? false
-        : renderToolResultWithRegistry({
-            target: detailEl,
-            result: exec.result,
-            locale: currentContentLocale,
-            sendMessage: sendRuntimeMessage,
-          });
-      if (!rendered) detailEl.textContent = detail;
-      item.querySelector(".dpp-tool-block-item-text")!.appendChild(detailEl);
-    }
-    body.appendChild(item);
-  }
-}
-
-function formatToolResultDetail(result: ToolCardResult): string {
-  if (result.detail) {
-    if (!result.ok && looksLikeJson(result.detail)) {
-      const extracted = extractReadableError(result.detail);
-      if (extracted) return extracted;
-    }
-    return result.detail;
-  }
-  if (result.output === undefined) return "";
-  return typeof result.output === "string"
-    ? result.output
-    : JSON.stringify(result.output, null, 2);
-}
-
-function looksLikeJson(value: string): boolean {
-  const trimmed = value.trimStart();
-  return trimmed.startsWith("{") || trimmed.startsWith("[");
-}
-
-function extractReadableError(jsonText: string): string | null {
-  try {
-    const parsed = JSON.parse(jsonText);
-    if (typeof parsed === "string") return parsed;
-    if (Array.isArray(parsed)) {
-      const texts = parsed
-        .filter(
-          (item: unknown) =>
-            item &&
-            typeof item === "object" &&
-            (item as Record<string, unknown>).type === "text",
-        )
-        .map((item: unknown) => (item as Record<string, unknown>).text)
-        .filter((text: unknown): text is string => typeof text === "string");
-      if (texts.length > 0) return texts.join("\n");
-    }
-    if (parsed && typeof parsed === "object") {
-      if (typeof parsed.message === "string") return parsed.message;
-      if (typeof parsed.error === "string") return parsed.error;
-      if (
-        parsed.error &&
-        typeof parsed.error === "object" &&
-        typeof parsed.error.message === "string"
-      ) {
-        return parsed.error.message;
-      }
-    }
-  } catch {
-    /* not valid JSON, return null */
-  }
-  return null;
-}
-
-function formatToolExecutionName(exec: ToolExecutionRecord): string {
-  if (exec.name === "python_exec")
-    return contentT("content.toolBlock.pythonInterpreter");
-  return exec.provider?.displayName
-    ? `${exec.provider.displayName} / ${exec.name}`
-    : exec.name;
-}
-
-function renderActiveToolBlockForCurrentRoute(): void {
-  const session = getCurrentRouteActiveToolBlockSession();
-  if (!session) return;
-
-  activeToolBlockSessionId = session.id;
-  toolExecutions = session.executions;
-  renderToolBlock(session);
-}
-
 function isToolBlockSessionOnCurrentRoute(
   session: ActiveToolBlockSession,
 ): boolean {
   if (session.chatSessionId)
     return getCurrentChatSessionId() === session.chatSessionId;
   return session.url === getToolBlockUrl();
-}
-
-function renderToolBlock(
-  session: ActiveToolBlockSession = getActiveToolBlockSession() ?? {
-    id: "",
-    url: getToolBlockUrl(),
-    chatSessionId: getCurrentChatSessionId(),
-    requestId: null,
-    parentMessageId: null,
-    content: "",
-    executions: toolExecutions,
-    createdAt: Date.now(),
-    updatedAt: Date.now(),
-  },
-  options?: { skipCleanup?: boolean },
-) {
-  if (session.executions.length === 0) return;
-  if (!isToolBlockSessionOnCurrentRoute(session)) return;
-
-  injectToolBlockStyles();
-
-  const existing = findRestoredToolBlock(session.id) as HTMLElement | null;
-  if (existing) {
-    toolBlockEl = existing;
-  } else if (
-    !toolBlockEl ||
-    toolBlockEl.getAttribute("data-dpp-tool-key") !== session.id
-  ) {
-    toolBlockEl = createToolBlockShell({
-      id: TOOL_BLOCK_ID,
-      restoreId: session.id,
-    });
-  }
-
-  if (!toolBlockEl.isConnected) {
-    const block = toolBlockEl;
-    placeToolBlock(
-      block,
-      () => isToolBlockSessionOnCurrentRoute(session),
-      (message) =>
-        renderDetachedArtifactResults(
-          message,
-          session.id,
-          session.executions,
-          block,
-        ),
-    );
-  }
-
-  if (!options?.skipCleanup) {
-    cleanRenderedToolCalls();
-  }
-  updateToolBlockContent(toolBlockEl, session.executions);
-  renderDetachedArtifactResultsForBlock(session, toolBlockEl);
-}
-
-function renderDetachedArtifactResultsForBlock(
-  session: ActiveToolBlockSession,
-  block: HTMLElement,
-) {
-  const message = block.closest(".ds-message");
-  if (!message) return;
-  renderDetachedArtifactResults(message, session.id, session.executions, block);
-}
-
-function renderDetachedArtifactResults(
-  message: Element,
-  sessionId: string,
-  executions: ToolExecutionRecord[],
-  beforeBlock?: HTMLElement,
-) {
-  const artifactExecutions = executions.filter(isDetachedArtifactExecution);
-  const existing = findDetachedArtifactResults(message, sessionId);
-  if (artifactExecutions.length === 0) {
-    existing?.remove();
-    return;
-  }
-
-  injectToolBlockStyles();
-  const responseHost = getAssistantResponseHost(message);
-  const container =
-    existing ?? createDetachedArtifactResultsContainer(sessionId);
-  container.innerHTML = "";
-  for (const exec of artifactExecutions) {
-    const item = document.createElement("div");
-    item.className = "dpp-artifact-result-item";
-    const rendered = renderToolResultWithRegistry({
-      target: item,
-      result: exec.result,
-      locale: currentContentLocale,
-      sendMessage: sendRuntimeMessage,
-    });
-    if (rendered) container.appendChild(item);
-  }
-
-  if (container.childElementCount === 0) {
-    container.remove();
-    return;
-  }
-
-  const anchor =
-    beforeBlock && beforeBlock.parentElement === responseHost
-      ? beforeBlock
-      : null;
-  if (!container.isConnected) {
-    responseHost.insertBefore(container, anchor);
-  } else if (anchor && container.nextSibling !== anchor) {
-    responseHost.insertBefore(container, anchor);
-  }
-}
-
-function createDetachedArtifactResultsContainer(
-  sessionId: string,
-): HTMLElement {
-  const container = document.createElement("div");
-  container.className = "dpp-artifact-results";
-  container.setAttribute("data-dpp-artifact-session-id", sessionId);
-  return container;
-}
-
-function findDetachedArtifactResults(
-  message: Element,
-  sessionId: string,
-): HTMLElement | null {
-  const responseHost = getAssistantResponseHost(message);
-  return (
-    Array.from(
-      responseHost.querySelectorAll<HTMLElement>(
-        ":scope > .dpp-artifact-results",
-      ),
-    ).find(
-      (container) =>
-        container.getAttribute("data-dpp-artifact-session-id") === sessionId,
-    ) ?? null
-  );
-}
-
-function isDetachedArtifactExecution(execution: ToolExecutionRecord): boolean {
-  return !execution.pending && isDetachedArtifactToolResult(execution.result);
-}
-
-function isDetachedArtifactToolResult(result: ToolCardResult): boolean {
-  const output = result.output;
-  return Boolean(
-    output &&
-    typeof output === "object" &&
-    !Array.isArray(output) &&
-    (output as Record<string, unknown>).kind === "artifact",
-  );
-}
-
-function requeueRestoredToolRecordsForCurrentRoute(): void {
-  for (const [id, record] of restoredToolRecords) {
-    if (record.source !== "storage" || isToolRecordOnCurrentRoute(record)) {
-      pendingRestoredToolRecordIds.add(id);
-    }
-  }
 }
 
 function requeueRestoredInlineAgentTracesForCurrentRoute(): void {
@@ -8398,95 +7879,9 @@ function requeueRestoredInlineAgentTracesForCurrentRoute(): void {
   }
 }
 
-function scheduleRenderRestoredToolBlocks() {
-  if (pendingRestoredToolRecordIds.size === 0) return;
-  if (restoredRenderTimer) return;
-
-  restoredRenderTimer = setTimeout(
-    () => {
-      restoredRenderTimer = null;
-      const missing = renderRestoredToolBlocks();
-      if (missing > 0 && restoredRenderAttempts < 20) {
-        restoredRenderAttempts++;
-        scheduleRenderRestoredToolBlocks();
-        return;
-      }
-      restoredRenderAttempts = 0;
-    },
-    restoredRenderAttempts === 0 ? 0 : 250,
-  );
-}
-
-function renderRestoredToolBlocks(): number {
-  injectToolBlockStyles();
-
-  const messages = getAssistantMessages();
-  if (messages.length === 0) return pendingRestoredToolRecordIds.size;
-
-  const usedMessages = new Set<Element>();
-
-  for (const id of [...pendingRestoredToolRecordIds]) {
-    const record = restoredToolRecords.get(id);
-    if (!record) {
-      pendingRestoredToolRecordIds.delete(id);
-      continue;
-    }
-    // Agent-owned messages: the inline agent trace (live or restored) renders
-    // the trigger turn's tools as the first agent tool group, so the legacy
-    // tool block must never mount there — showing both would duplicate the
-    // same executions in two visual styles (Issue: unified agent run record).
-    if (isToolBlockRecordOwnedByAgentRun(record)) {
-      pendingRestoredToolRecordIds.delete(id);
-      continue;
-    }
-    const existingBlock = findRestoredToolBlock(
-      record.id,
-    ) as HTMLElement | null;
-    if (existingBlock) {
-      const executions = getRestoredExecutions(record);
-      if (executions.length > 0) {
-        updateToolBlockContent(existingBlock, executions);
-        const target = existingBlock.closest(".ds-message");
-        if (target)
-          renderDetachedArtifactResults(
-            target,
-            record.id,
-            executions,
-            existingBlock,
-          );
-      }
-      pendingRestoredToolRecordIds.delete(id);
-      continue;
-    }
-
-    const target = findRestoredToolTarget(record, messages, usedMessages);
-    if (!target) continue;
-
-    const executions = getRestoredExecutions(record);
-    if (executions.length === 0) {
-      pendingRestoredToolRecordIds.delete(id);
-      continue;
-    }
-
-    const block = createToolBlockShell({
-      restoreId: record.id,
-      collapsed: true,
-    });
-    updateToolBlockContent(block, executions);
-    appendToolBlockToMessage(target, block);
-    renderDetachedArtifactResults(target, record.id, executions, block);
-    usedMessages.add(target);
-    pendingRestoredToolRecordIds.delete(id);
-  }
-
-  cleanRenderedToolCalls();
-  return pendingRestoredToolRecordIds.size;
-}
-
 function scheduleRenderRestoredInlineAgentTraces() {
   if (pendingRestoredInlineAgentTraceIds.size === 0) return;
   if (restoredInlineAgentRenderTimer) return;
-
   restoredInlineAgentRenderTimer = setTimeout(
     () => {
       restoredInlineAgentRenderTimer = null;
@@ -8742,163 +8137,8 @@ function mountRestoredInlineAgentContainer(
   trace: InlineAgentTraceRecord,
 ): void {
   adoptMessageReasoningBlocks(message);
-  // Defense against the restore race (tool-block read may finish before the
-  // trace map is populated): the agent console owns the tool presentation of
-  // its anchor message, so any legacy block mounted there is removed.
-  removeToolBlockFromMessage(message);
   const host = getAssistantResponseHost(message);
   host.appendChild(container);
-}
-
-function findRestoredToolBlock(id: string): Element | null {
-  for (const block of document.querySelectorAll(
-    ".dpp-tool-block[data-dpp-tool-key]",
-  )) {
-    if (block.getAttribute("data-dpp-tool-key") === id) return block;
-  }
-  return null;
-}
-
-/**
- * True when a persisted tool block belongs to an inline-agent run's anchor
- * message: its `metadata.assistantMessageId` matches the live agent trace's
- * anchor, or any restored trace's anchor. The agent console owns the tool
- * presentation of those messages (the trigger turn's executions render as its
- * first tool group), so the legacy block must not mount.
- */
-function isToolBlockRecordOwnedByAgentRun(
-  record: ToolCallRestoreRecord,
-): boolean {
-  const rawAssistantMessageId = record.metadata?.assistantMessageId;
-  if (rawAssistantMessageId === undefined || rawAssistantMessageId === null)
-    return false;
-  const assistantMessageId = Number(rawAssistantMessageId);
-  if (!Number.isFinite(assistantMessageId)) return false;
-  if (activeInlineAgentTrace?.anchorMessageId === assistantMessageId)
-    return true;
-  for (const trace of restoredInlineAgentTraces.values()) {
-    if (trace.anchorMessageId === assistantMessageId) return true;
-  }
-  return false;
-}
-
-function getRestoredExecutions(
-  record: ToolCallRestoreRecord,
-): ToolExecutionRecord[] {
-  if (record.executions?.length) {
-    return record.executions.map((execution) =>
-      normalizeRestoredToolExecution(execution),
-    );
-  }
-  return (record.calls ?? []).map((call) => ({
-    name: call.name,
-    provider: call.provider,
-    descriptorId: call.descriptorId,
-    result: summarizeRestoredToolCall(call),
-  }));
-}
-
-function summarizeRestoredToolCall(call: ToolCall): ToolCardResult {
-  const artifactResult = hasRestoreOmittedPayload(call.payload)
-    ? null
-    : createRestoredArtifactToolResult(call, currentContentLocale);
-  if (artifactResult) {
-    return {
-      ok: artifactResult.ok,
-      summary: artifactResult.summary,
-      detail: artifactResult.detail,
-      output: artifactResult.output,
-      truncated: artifactResult.truncated,
-      error: artifactResult.error,
-    };
-  }
-
-  const payload = call.payload as Record<string, unknown>;
-  const detail = getRestoredPayloadDetail(payload);
-
-  switch (call.name) {
-    case "memory_save":
-      return {
-        ok: true,
-        summary: contentT("content.toolBlock.summaries.saved"),
-        detail,
-      };
-    case "memory_update":
-      return {
-        ok: true,
-        summary: contentT("content.toolBlock.summaries.updated"),
-        detail,
-      };
-    case "memory_delete":
-      return {
-        ok: true,
-        summary: contentT("content.toolBlock.summaries.deleted"),
-        detail,
-      };
-    case "web_search":
-      return {
-        ok: true,
-        summary: contentT("content.toolBlock.summaries.searched"),
-        detail: String(
-          typeof call.payload.query === "string" ? call.payload.query : "",
-        ),
-      };
-    case "web_fetch":
-      return {
-        ok: true,
-        summary: contentT("content.toolBlock.summaries.fetched"),
-        detail: String(
-          typeof call.payload.url === "string" ? call.payload.url : "",
-        ),
-      };
-    case "artifact_create":
-    case "artifact_bundle_create":
-      return {
-        ok: true,
-        summary: contentT("content.toolBlock.summaries.executed"),
-        detail,
-      };
-    default:
-      return {
-        ok: true,
-        summary: contentT("content.toolBlock.summaries.executed"),
-        detail,
-      };
-  }
-}
-
-function getRestoredPayloadDetail(payload: Record<string, unknown>): string {
-  const primary =
-    payload.filename ?? payload.name ?? payload.content ?? payload.id ?? "";
-  if (typeof primary === "string") return primary;
-
-  const preview = getRestoreTruncatedPreview(primary);
-  if (preview) return preview;
-
-  return "";
-}
-
-function hasRestoreOmittedPayload(value: unknown): boolean {
-  if (!value || typeof value !== "object") return false;
-  if (Array.isArray(value)) return value.some(hasRestoreOmittedPayload);
-
-  const record = value as Record<string, unknown>;
-  if (
-    record.__dppRestoreTruncatedText === true ||
-    typeof record.__dppRestoreOmittedItems === "number" ||
-    typeof record.__dppRestoreOmittedKeys === "number" ||
-    record.__dppRestoreMaxDepth === true
-  ) {
-    return true;
-  }
-
-  return Object.values(record).some(hasRestoreOmittedPayload);
-}
-
-function getRestoreTruncatedPreview(value: unknown): string {
-  if (!value || typeof value !== "object" || Array.isArray(value)) return "";
-  const preview = (value as Record<string, unknown>).preview;
-  return typeof preview === "string" ? preview : "";
 }
 
 function getAssistantMessages(): Element[] {
@@ -9094,30 +8334,10 @@ function startRenderedToolCallCleaner(
     mutationHub.subscribe({
       matches: (mutations) => {
         if (toolCapabilityScope !== scope || !scope.active) return false;
-        const restoreAction = getRestoredMessageMutationAction(mutations, {
-          hasPendingRecords: pendingRestoredToolRecordIds.size > 0,
-          restoredUiSelector: RESTORED_TOOL_UI_SELECTOR,
-        });
-        return (
-          restoreAction.schedulePendingRender ||
-          mutations.some(mutationMayContainCleanableText)
-        );
+        return mutations.some(mutationMayContainCleanableText);
       },
-      handle(mutations) {
-        const restoreAction = getRestoredMessageMutationAction(mutations, {
-          hasPendingRecords: pendingRestoredToolRecordIds.size > 0,
-          restoredUiSelector: RESTORED_TOOL_UI_SELECTOR,
-        });
-        if (restoreAction.requeueMountedRecords)
-          requeueRestoredToolRecordsForCurrentRoute();
+      handle() {
         schedule();
-        if (
-          restoreAction.schedulePendingRender &&
-          pendingRestoredToolRecordIds.size > 0
-        ) {
-          restoredRenderAttempts = 0;
-          scheduleRenderRestoredToolBlocks();
-        }
       },
     }),
   );
@@ -9152,7 +8372,7 @@ function addedNodeMayContainCleanableText(node: Node): boolean {
   if (!(node instanceof Element)) return false;
   if (
     node.closest(
-      '.dpp-tool-block, .dpp-agent-container, script, style, textarea, input, [contenteditable="true"]',
+      '.dpp-agent-container, script, style, textarea, input, [contenteditable="true"]',
     )
   ) {
     return false;
@@ -9329,16 +8549,6 @@ function getInlineAgentContinuationMessageCandidates(
 
 function getToolCleanupRoots(): Element[] {
   const roots = new Set<Element>();
-  const activeMessage = toolBlockEl?.closest(".ds-message");
-  if (activeMessage) roots.add(activeMessage);
-
-  for (const block of document.querySelectorAll(
-    `#${TOOL_BLOCK_ID}, .dpp-tool-block`,
-  )) {
-    const message = block.closest(".ds-message");
-    if (message) roots.add(message);
-  }
-
   const messages = document.querySelectorAll(".ds-message");
   const minIndex = Math.max(0, messages.length - CLEANUP_MESSAGE_SCAN_LIMIT);
   for (let i = messages.length - 1; i >= 0; i--) {
@@ -9368,9 +8578,9 @@ function stripToolCallTextNodes(root: Element) {
         // .ds-message). Letting strip touch it here can leave an empty shell
         // when DeepSeek re-renders and drops the display:none, so skip it.
         parent.closest("[data-dpp-hidden-inline-agent-continuation]") ||
-        // Detached artifact cards live outside .dpp-tool-block but must be
-        // exempt from tool-call text stripping just like the block itself.
-        parent.closest(".dpp-tool-block, .dpp-artifact-results") ||
+        // Detached artifact cards must be exempt from tool-call text
+        // stripping just like the rest of the extension-owned UI.
+        parent.closest(".dpp-artifact-results") ||
         parent.closest(
           'script, style, textarea, input, [contenteditable="true"]',
         )
@@ -9522,7 +8732,7 @@ function pruneEmptyToolContainers(start: HTMLElement, boundary: Element) {
     const hasVisibleText = (el.textContent ?? "").trim().length > 0;
     const hasProtectedChild = Boolean(
       el.querySelector(
-        ".dpp-tool-block, img, svg, canvas, video, button, input, textarea",
+        "img, svg, canvas, video, button, input, textarea",
       ),
     );
 
@@ -9533,46 +8743,6 @@ function pruneEmptyToolContainers(start: HTMLElement, boundary: Element) {
     }
 
     el = parent;
-  }
-}
-
-function collapseToolBlock(block: HTMLElement | null = toolBlockEl) {
-  if (!block) return;
-  block.removeAttribute("id");
-  toolCapabilityScope?.setTimeout(() => {
-    block.setAttribute("data-collapsed", "true");
-  }, 1500);
-}
-
-function appendToolBlockToMessage(message: Element, block: HTMLElement) {
-  getAssistantResponseHost(message).appendChild(block);
-}
-
-function placeToolBlock(
-  block: HTMLElement,
-  canPlace: () => boolean = () => true,
-  onPlaced?: (message: Element) => void,
-) {
-  const tryPlace = () => {
-    if (!canPlace()) return false;
-    // Find last assistant message container
-    const messages = getAssistantMessages();
-    if (messages.length === 0) return false;
-
-    const lastMsg = messages[messages.length - 1];
-    appendToolBlockToMessage(lastMsg, block);
-    onPlaced?.(lastMsg);
-    return true;
-  };
-
-  if (!tryPlace()) {
-    // DOM not ready yet — retry after a short delay
-    const scope = toolCapabilityScope;
-    if (!scope?.active) return;
-    const timer = scope.setInterval(() => {
-      if (tryPlace()) scope.clearInterval(timer);
-    }, 200);
-    scope.setTimeout(() => scope.clearInterval(timer), 5000);
   }
 }
 

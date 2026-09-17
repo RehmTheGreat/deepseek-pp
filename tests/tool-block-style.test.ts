@@ -3,28 +3,6 @@ import { join } from 'node:path';
 import { describe, expect, it } from 'vitest';
 
 describe('content tool block styles', () => {
-  it('keeps restored tool detail content scrollable for long source output', () => {
-    const path = join(process.cwd(), 'entrypoints/content.ts');
-    const source = readFileSync(path, 'utf8');
-    const rule = source.match(/\.dpp-tool-block-item-detail \{([\s\S]*?)\n    \}/)?.[1] ?? '';
-
-    expect(rule).toContain('max-height:');
-    expect(rule).toContain('overflow: auto;');
-    expect(rule).toContain('overscroll-behavior: contain;');
-  });
-
-  it('renders artifact results outside the collapsible executed-tools block', () => {
-    const path = join(process.cwd(), 'entrypoints/content.ts');
-    const source = readFileSync(path, 'utf8');
-
-    expect(source).toContain('.dpp-artifact-results');
-    expect(source).toContain('function renderDetachedArtifactResults(');
-    expect(source).toContain('isDetachedArtifactToolResult(exec.result)');
-    expect(source).toContain('renderDetachedArtifactResultsForBlock(session, toolBlockEl);');
-    expect(source).toContain('renderDetachedArtifactResults(target, record.id, executions, block);');
-    expect(source).toContain('responseHost.insertBefore(container, anchor);');
-  });
-
   it('keeps rendered tool cleanup bounded for large message bodies', () => {
     const path = join(process.cwd(), 'entrypoints/content.ts');
     const source = readFileSync(path, 'utf8');
@@ -95,13 +73,11 @@ describe('content tool block styles', () => {
     expect(source).toContain("data-dpp-hidden-inline-agent-continuation");
   });
 
-  it('retries persisted tool and inline-agent restoration when long histories mount late', () => {
+  it('retries persisted inline-agent restoration when long histories mount late', () => {
     const path = join(process.cwd(), 'entrypoints/content.ts');
     const source = readFileSync(path, 'utf8');
 
     expect(source).toMatch(/from [\"']\.\/content\/restored-message-targets[\"'];/);
-    expect(source).toContain('restoredRenderAttempts = 0;');
-    expect(source).toContain('scheduleRenderRestoredToolBlocks();');
     expect(source).toContain('restoredInlineAgentRenderAttempts = 0;');
     expect(source).toContain('scheduleRenderRestoredInlineAgentTraces();');
   });
@@ -117,20 +93,15 @@ describe('content tool block styles', () => {
     expect(source).not.toContain('var(--ds-text-secondary');
   });
 
-  it('suppresses the legacy tool block when an inline agent takes over the run record', () => {
+  it('renders the agent flow as the single owner of the run record tool presentation', () => {
     const path = join(process.cwd(), 'entrypoints/content.ts');
     const source = readFileSync(path, 'utf8');
 
-    // The agent flow owns the tool presentation of the anchor message: the
-    // old-style collapsible block is removed from the DOM...
-    expect(source).toContain('function removeToolBlockFromMessage(message: Element): void');
-    expect(source).toContain(':scope > .dpp-tool-block, :scope > .dpp-artifact-results');
-    expect(source).toContain('removeToolBlockFromMessage(target);');
-    // ...and the trigger turn's executions render as the FIRST new-style tool
-    // group (step index -1 keeps it ahead of every loop step).
+    // The legacy collapsible block has no render path left at all (see
+    // tool-block-render-contract.test.ts); the trigger turn's executions
+    // render as the FIRST new-style tool group (step index -1 keeps it ahead
+    // of every loop step).
     expect(source).toContain('resolveAgentToolEntry(stream, -1, exec, getAgentRendererLabels());');
-    // The tool block never coexists with the agent container: the dedicated
-    // "indented when followed by an agent" rule is gone.
     expect(source).not.toContain('.dpp-tool-block:has(~ .dpp-agent-container)');
   });
 
@@ -141,16 +112,6 @@ describe('content tool block styles', () => {
     expect(source).toMatch(/initialExecutions: initialExecutions\.map\(\(execution\) =>\s*sanitizeToolExecutionForRestoreStorage\(execution\),?\s*\)/);
     expect(source).toContain('for (const exec of trace.initialExecutions ?? [])');
     expect(codec).toContain('${path}.initialExecutions must contain valid tool execution records');
-  });
-
-  it('skips restoring legacy tool blocks that belong to an agent-run message', () => {
-    const path = join(process.cwd(), 'entrypoints/content.ts');
-    const source = readFileSync(path, 'utf8');
-
-    expect(source).toMatch(/function isToolBlockRecordOwnedByAgentRun\(\s*record: ToolCallRestoreRecord,?\s*\): boolean/);
-    expect(source).toContain('activeInlineAgentTrace?.anchorMessageId === assistantMessageId');
-    expect(source).toContain('for (const trace of restoredInlineAgentTraces.values())');
-    expect(source).toContain('if (isToolBlockRecordOwnedByAgentRun(record)) {');
   });
 
   it('retires the artifact conversion from the agent display chain', () => {

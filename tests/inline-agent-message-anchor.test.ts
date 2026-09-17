@@ -61,24 +61,24 @@ describe('findAssistantMessageByContentSnippet (Issue #551 follow-up)', () => {
 });
 
 describe('getAssistantMessageOwnText', () => {
-  it('excludes console, final-answer, tool-block, and autosave-note subtrees', () => {
+  it('excludes console, final-answer, and autosave-note subtrees', () => {
     const message = buildMessage('消息正文');
     const host = message.querySelector('.ds-markdown')!;
     const answer = document.createElement('div');
     answer.setAttribute('data-dpp-body-text', 'true');
     answer.textContent = '最终答案区';
-    const toolBlock = document.createElement('div');
-    toolBlock.className = 'dpp-tool-block';
-    toolBlock.textContent = '已调用工具 3 次';
+    const console_ = document.createElement('div');
+    console_.className = 'dpp-agent-container';
+    console_.textContent = 'Step 1 已完成';
     const note = document.createElement('div');
     note.className = 'dpp-agent-autosave-note';
     note.textContent = '已自动保存';
-    host.append(answer, toolBlock, note);
+    host.append(answer, console_, note);
 
     const ownText = getAssistantMessageOwnText(message);
     expect(ownText).toContain('消息正文');
     expect(ownText).not.toContain('最终答案区');
-    expect(ownText).not.toContain('已调用工具');
+    expect(ownText).not.toContain('已完成');
     expect(ownText).not.toContain('已自动保存');
   });
 });

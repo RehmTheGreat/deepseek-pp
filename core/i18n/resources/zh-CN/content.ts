@@ -61,14 +61,7 @@ export const content = {
     },
   },
   toolBlock: {
-    title: '已调用工具（{count}次）',
-    pythonInterpreter: 'Python 解释器',
     summaries: {
-      saved: '已保存',
-      updated: '已更新',
-      deleted: '已删除',
-      searched: '已搜索',
-      fetched: '已获取',
       running: '执行中',
       executed: '已执行',
       failed: '执行失败',
