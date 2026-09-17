@@ -141,6 +141,8 @@ import {
   createAgentContainer,
   createAgentStepElement,
   mountAgentNarration,
+  mountRestoredAgentStep,
+  applyRestoredBodyFontSize,
   updateStepStreamText,
   updateStepStatus,
   updateAgentReasoningNoteElement,
@@ -8054,49 +8056,24 @@ function createRestoredInlineAgentContainer(
     ) {
       continue;
     }
-    const stepEl = createAgentStepElement(step.index);
     const stepText = getInlineAgentRestoredStepText(step.text) || step.text;
     const renderStepText =
       clampText(stepText, INLINE_AGENT_STEP_RENDER_MAX_CHARS) ?? "";
     const stepIsFinalAnswer = step.index === lastStepIndex && lastStepIsAnswer;
+    const stepEl = mountRestoredAgentStep(
+      consoleBody,
+      {
+        index: step.index,
+        status: step.status,
+        reasoning: step.reasoning,
+        toolExecutions: step.toolExecutions,
+        renderText: stepIsFinalAnswer ? restoredAnswerText : renderStepText,
+      },
+      getAgentRendererLabels(),
+    );
     if (renderStepText) {
-      updateStepStreamText(
-        stepEl,
-        stepIsFinalAnswer ? restoredAnswerText : renderStepText,
-      );
       refreshAgentStepCodeRunners(stepEl);
-      mountAgentNarration(
-        stepEl,
-        consoleBody,
-        getAgentRendererLabels(),
-        step.reasoning,
-      );
       if (stepIsFinalAnswer) lastStepReplaced = true;
-    } else if (step.reasoning) {
-      // Reasoning-only step (no narration text was persisted): mount the
-      // textless step so the reasoning note has a home in the flow.
-      mountAgentNarration(
-        stepEl,
-        consoleBody,
-        getAgentRendererLabels(),
-        step.reasoning,
-      );
-    }
-    for (const exec of step.toolExecutions) {
-      resolveAgentToolEntry(
-        consoleBody,
-        step.index,
-        exec,
-        getAgentRendererLabels(),
-      );
-    }
-    // A mid-flight step (streaming / executing tools) persisted by a page
-    // refresh can never resume: render it as interrupted instead of a frozen
-    // blinking state with no stop control (Issue #544).
-    if (step.status === "streaming" || step.status === "executing_tools") {
-      updateStepStatus(stepEl, "interrupted");
-    } else {
-      updateStepStatus(stepEl, step.status);
     }
   }
   if (!nativeHistoryOwnsFinalTurn && !lastStepReplaced && restoredAnswerText) {
@@ -8152,6 +8129,30 @@ function mountRestoredInlineAgentContainer(
   adoptMessageReasoningBlocks(message);
   const host = getAssistantResponseHost(message);
   host.appendChild(container);
+  // Post-run visibility parity: console-rendered narration (the runs whose
+  // final turn the native page does NOT own — official-api, budget-paused and
+  // tool-bearing last steps) must read at the native message's size, not the
+  // in-run 14px. The measured size is published on the restored container as
+  // an inline custom property; a failed measurement is a no-op and the CSS
+  // fallback keeps 14px. In-run containers never carry data-restored, so
+  // their typography is untouched.
+  applyRestoredBodyFontSize(container, measureRestoredHostFontSize(message));
+}
+
+/**
+ * Measures the native reference typography for a restored console: the anchor
+ * assistant message's computed font-size (the text the restored console sits
+ * next to), falling back to the page body. Computed sizes always resolve to
+ * px, so an empty reading is the only realistic failure here; value
+ * validation lives in resolveRestoredBodyFontSize.
+ */
+function measureRestoredHostFontSize(message: Element | null): string | null {
+  for (const element of [message, document.body]) {
+    if (!element) continue;
+    const size = window.getComputedStyle(element).fontSize;
+    if (size) return size;
+  }
+  return null;
 }
 
 function getAssistantMessages(): Element[] {

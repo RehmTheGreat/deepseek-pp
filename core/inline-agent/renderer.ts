@@ -166,6 +166,16 @@ export function injectInlineAgentStyles(): void {
       color: var(--dpp-ui-text);
       word-break: break-word;
     }
+    /* Post-run visibility parity: a RESTORED console (mounted after the
+       completed-run page reload) narrates at the host page's measured body
+       size instead of the in-run 14px — the size the native history around it
+       renders at. The container carries the measurement as an inline custom
+       property (applyRestoredBodyFontSize); without a measurement the fallback
+       keeps the in-run size. Scoped to [data-restored="true"], so in-run
+       rendering always stays at the base rule above. */
+    .dpp-agent-container[data-restored="true"] .dpp-agent-step-body {
+      font-size: var(--dpp-restored-body-font-size, 14px);
+    }
     .dpp-agent-step-body:empty {
       display: none;
     }
@@ -905,6 +915,105 @@ export function updateStepStreamText(step: HTMLElement, visibleText: string): vo
 
 export function updateStepStatus(step: HTMLElement, status: string): void {
   step.setAttribute('data-status', status);
+}
+
+// ---------------------------------------------------------------------------
+// Restored consoles (post-reload visibility parity). The content restore
+// pipeline reuses the in-run DOM construction, so the per-step mount below
+// composes the exact in-run primitives; only restored-mode typography differs
+// (see the [data-restored="true"] CSS override).
+// ---------------------------------------------------------------------------
+
+/**
+ * Bounds for the host-measured body font size. Computed styles always resolve
+ * to px, so anything non-numeric is a failed measurement; the bounds reject
+ * garbage values (hidden-element "0px", absurd sizes) while accepting every
+ * realistic page body size. Outside the bounds the CSS fallback (14px) wins.
+ */
+const RESTORED_BODY_FONT_SIZE_MIN_PX = 8;
+const RESTORED_BODY_FONT_SIZE_MAX_PX = 72;
+
+/**
+ * Validates a measured CSS font-size string ("16px", "15.5px") and returns the
+ * normalized px value, or null when the measurement failed.
+ */
+export function resolveRestoredBodyFontSize(
+  measured: string | null | undefined,
+): string | null {
+  const match = /^(\d+(?:\.\d+)?)px$/.exec((measured ?? '').trim());
+  if (!match) return null;
+  const value = Number(match[1]);
+  if (
+    !Number.isFinite(value) ||
+    value < RESTORED_BODY_FONT_SIZE_MIN_PX ||
+    value > RESTORED_BODY_FONT_SIZE_MAX_PX
+  ) {
+    return null;
+  }
+  return `${value}px`;
+}
+
+/**
+ * Publishes the measured host body font size on a restored container as an
+ * inline custom property consumed by the restored-mode CSS rule. A failed
+ * measurement is a no-op: the rule's 14px fallback keeps today's size.
+ */
+export function applyRestoredBodyFontSize(
+  container: HTMLElement,
+  measured: string | null | undefined,
+): void {
+  const size = resolveRestoredBodyFontSize(measured);
+  if (!size) return;
+  container.style.setProperty('--dpp-restored-body-font-size', size);
+}
+
+/**
+ * Restored shape of one persisted agent step: narration (when text was
+ * persisted), its folded reasoning note and its completed tool rows, exactly
+ * as the in-run stream would have shown them.
+ */
+export interface RestoredAgentStepInput {
+  readonly index: number;
+  readonly status: string;
+  /**
+   * Narration text to render: the step's restored text, or the run's resolved
+   * final answer when this step IS the answer. Empty for a textless step.
+   */
+  readonly renderText: string;
+  readonly reasoning?: string;
+  readonly toolExecutions: readonly ToolExecutionRecord[];
+}
+
+/**
+ * Mounts one restored step into a stream with the in-run construction order:
+ * narration text first (the narration mount also seals/seats the tool group),
+ * then the step's completed tool entries, then the terminal status. A step
+ * persisted mid-flight (streaming / executing_tools — a page refresh happened
+ * during it) renders as interrupted, never as a frozen running state.
+ */
+export function mountRestoredAgentStep(
+  stream: HTMLElement,
+  step: RestoredAgentStepInput,
+  labels?: Partial<InlineAgentRendererLabels>,
+): HTMLElement {
+  const stepEl = createAgentStepElement(step.index);
+  if (step.renderText) {
+    updateStepStreamText(stepEl, step.renderText);
+    mountAgentNarration(stepEl, stream, labels, step.reasoning);
+  } else if (step.reasoning) {
+    // Reasoning-only step (no narration text was persisted): mount the
+    // textless step so the reasoning note has a home in the flow.
+    mountAgentNarration(stepEl, stream, labels, step.reasoning);
+  }
+  for (const execution of step.toolExecutions) {
+    resolveAgentToolEntry(stream, step.index, execution, labels);
+  }
+  if (step.status === 'streaming' || step.status === 'executing_tools') {
+    updateStepStatus(stepEl, 'interrupted');
+  } else {
+    updateStepStatus(stepEl, step.status);
+  }
+  return stepEl;
 }
 
 // ---------------------------------------------------------------------------

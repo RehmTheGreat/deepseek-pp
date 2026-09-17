@@ -2,6 +2,7 @@ import { afterEach, describe, expect, it, vi } from 'vitest';
 import {
   addAgentToolEntry,
   adoptReasoningBlock,
+  applyRestoredBodyFontSize,
   appendAgentConsoleNotice,
   autoCollapseCompletedReasoningHost,
   collapseAllAgentToolGroups,
@@ -16,10 +17,12 @@ import {
   isInlineAgentBudgetFinalText,
   mountAgentChildConsole,
   mountAgentNarration,
+  mountRestoredAgentStep,
   updateAgentChildConsoleStatus,
   updateAgentReasoningNoteElement,
   renderAgentStreamText,
   resolveAgentToolEntry,
+  resolveRestoredBodyFontSize,
   updateAgentConsoleHeader,
   updateStepStatus,
   updateStepStreamText,
@@ -1028,5 +1031,194 @@ describe('inline agent renderer child-run hierarchy (P1 subagent, M5)', () => {
     expect(css).toContain('data-child-phase="running"');
     expect(css).toContain('data-child-phase="error"');
     expect(css).toContain('data-child-phase="complete"');
+  });
+});
+
+/**
+ * Task "uniform tools" (post-run visibility parity): after the completed-run
+ * page reload, the restored console keeps the run's tool rows visible and its
+ * console-rendered final narration no longer renders at the in-run 14px.
+ * These tests cover the renderer building block the content restore pipeline
+ * composes (content.ts is an entrypoint and not importable under vitest; its
+ * wiring is pinned by tests/inline-agent-restored-console.test.ts).
+ */
+describe('restored agent console rendering (post-reload visibility parity)', () => {
+  afterEach(() => {
+    document.head.innerHTML = '';
+    document.body.innerHTML = '';
+  });
+
+  function restoredStream(): { container: HTMLElement; stream: HTMLElement } {
+    const container = createAgentContainer(undefined, streamLabels);
+    container.setAttribute('data-restored', 'true');
+    const stream = getAgentConsoleBody(container);
+    if (!stream) throw new Error('agent stream missing');
+    return { container, stream };
+  }
+
+  it('renders a completed multi-tool step with every tool row in the stream', () => {
+    const { container, stream } = restoredStream();
+
+    mountRestoredAgentStep(
+      stream,
+      {
+        index: 1,
+        status: 'complete',
+        renderText: 'Checking the deployment now.',
+        reasoning: 'I should verify the release.',
+        toolExecutions: [
+          makeExecution('web_search', { ok: true, summary: 'found 5 results' }),
+          makeExecution('shell_exec', { ok: false, summary: 'boom' }),
+        ],
+      },
+      streamLabels,
+    );
+
+    const step = stream.querySelector('.dpp-agent-step[data-step-index="1"]');
+    expect(step).not.toBeNull();
+    const body = step?.querySelector('.dpp-agent-step-body');
+    expect(body?.getAttribute('data-dpp-raw-text')).toBe('Checking the deployment now.');
+    expect(body?.textContent).toContain('Checking the deployment now.');
+
+    const items = Array.from(stream.querySelectorAll('.dpp-agent-tool-item'));
+    expect(items).toHaveLength(2);
+    expect(items[0].querySelector('.dpp-agent-tool-name')?.textContent).toBe('web_search');
+    expect(items[0].getAttribute('data-tool-status')).toBe('ok');
+    expect(items[1].querySelector('.dpp-agent-tool-name')?.textContent).toBe('shell_exec');
+    expect(items[1].getAttribute('data-tool-status')).toBe('err');
+    expect(items[0].querySelector('.dpp-agent-tool-state')?.textContent).toBe('Executed');
+    expect(items[1].querySelector('.dpp-agent-tool-state')?.textContent).toBe('Execution failed');
+    // Restored runs are finished: the console collapses groups, but the rows
+    // themselves must stay in the stream (the "tools gone after reload" class
+    // of regressions).
+    collapseAllAgentToolGroups(stream);
+    const group = stream.querySelector('.dpp-agent-tool-group');
+    expect(group?.getAttribute('data-collapsed')).toBe('true');
+    expect(stream.querySelectorAll('.dpp-agent-tool-item')).toHaveLength(2);
+    expect(container.querySelectorAll('.dpp-agent-tool-item')).toHaveLength(2);
+  });
+
+  it('renders the resolved final answer text for the final step when the console owns the turn', () => {
+    const { stream } = restoredStream();
+
+    // Non-final mid-run step keeps its own text; the final step renders the
+    // resolved answer (official-api / budget-paused / tool-bearing last steps
+    // never hand the final turn to the native page).
+    mountRestoredAgentStep(
+      stream,
+      { index: 0, status: 'complete', renderText: 'step one notes', toolExecutions: [] },
+      streamLabels,
+    );
+    mountRestoredAgentStep(
+      stream,
+      {
+        index: 1,
+        status: 'complete',
+        renderText: 'Here is the full final answer.',
+        toolExecutions: [makeExecution('web_search', { ok: true, summary: 'ok' })],
+      },
+      streamLabels,
+    );
+
+    const bodies = Array.from(stream.querySelectorAll('.dpp-agent-step-body'));
+    expect(bodies[0]?.getAttribute('data-dpp-raw-text')).toBe('step one notes');
+    expect(bodies[1]?.getAttribute('data-dpp-raw-text')).toBe('Here is the full final answer.');
+    // The final step's tool row survives next to the answer narration.
+    expect(stream.querySelectorAll('.dpp-agent-tool-item')).toHaveLength(1);
+  });
+
+  it('mounts a reasoning-only narration for a textless step and still renders its tool rows', () => {
+    const { stream } = restoredStream();
+
+    mountRestoredAgentStep(
+      stream,
+      {
+        index: 2,
+        status: 'complete',
+        renderText: '',
+        reasoning: 'only thinking was persisted',
+        toolExecutions: [makeExecution('web_fetch', { ok: true, summary: 'fetched' })],
+      },
+      streamLabels,
+    );
+
+    const step = stream.querySelector('.dpp-agent-step[data-step-index="2"]');
+    expect(step).not.toBeNull();
+    // Textless narration body stays empty (CSS :empty hides it)…
+    expect(step?.querySelector('.dpp-agent-step-body')?.textContent).toBe('');
+    // …the folded reasoning note carries the thinking…
+    const note = getAgentReasoningNote(step as HTMLElement);
+    expect(note?.querySelector('.dpp-agent-reasoning-note-body')?.textContent)
+      .toBe('only thinking was persisted');
+    // …and the step's tool row is present.
+    expect(stream.querySelectorAll('.dpp-agent-tool-item')).toHaveLength(1);
+  });
+
+  it('renders persisted mid-flight steps as interrupted instead of frozen running states', () => {
+    const { stream } = restoredStream();
+
+    const streaming = mountRestoredAgentStep(
+      stream,
+      { index: 0, status: 'streaming', renderText: 'partial', toolExecutions: [] },
+      streamLabels,
+    );
+    const executing = mountRestoredAgentStep(
+      stream,
+      { index: 1, status: 'executing_tools', renderText: '', toolExecutions: [] },
+      streamLabels,
+    );
+    const settled = mountRestoredAgentStep(
+      stream,
+      { index: 2, status: 'error', renderText: 'failed step', toolExecutions: [] },
+      streamLabels,
+    );
+
+    expect(streaming.getAttribute('data-status')).toBe('interrupted');
+    expect(executing.getAttribute('data-status')).toBe('interrupted');
+    expect(settled.getAttribute('data-status')).toBe('error');
+  });
+
+  it('applies the measured host body font size as the restored custom property', () => {
+    const container = createAgentContainer();
+    container.setAttribute('data-restored', 'true');
+
+    applyRestoredBodyFontSize(container, '16px');
+    expect(container.style.getPropertyValue('--dpp-restored-body-font-size')).toBe('16px');
+
+    // A later measurement replaces the property (DeepSeek can re-render with a
+    // different zoom/font before the console mounts).
+    applyRestoredBodyFontSize(container, ' 15.5px ');
+    expect(container.style.getPropertyValue('--dpp-restored-body-font-size')).toBe('15.5px');
+
+    expect(resolveRestoredBodyFontSize('14px')).toBe('14px');
+  });
+
+  it('treats failed measurements as no-ops so the CSS fallback (14px) applies', () => {
+    const container = createAgentContainer();
+
+    for (const bad of [null, undefined, '', '   ', '16', 'larger', '0px', '-3px', '200px', '16rem']) {
+      applyRestoredBodyFontSize(container, bad);
+      expect(container.getAttribute('style') ?? '').not.toContain('--dpp-restored-body-font-size');
+    }
+
+    expect(resolveRestoredBodyFontSize('16px')).toBe('16px');
+    expect(resolveRestoredBodyFontSize(null)).toBeNull();
+    expect(resolveRestoredBodyFontSize('0px')).toBeNull();
+    expect(resolveRestoredBodyFontSize('96px')).toBeNull();
+  });
+
+  it('scopes the restored font-size override to data-restored containers and keeps in-run at 14px', () => {
+    injectInlineAgentStyles();
+    const css = document.getElementById('dpp-inline-agent-css')?.textContent ?? '';
+
+    // In-run base rule stays at 14px and never consumes the restored property.
+    const baseRule = css.match(/\.dpp-agent-step-body\s*\{[^}]*\}/)?.[0] ?? '';
+    expect(baseRule).toContain('font-size: 14px');
+    expect(baseRule).not.toContain('var(--dpp-restored-body-font-size');
+
+    // Restored override: scoped under the restored container attribute, with
+    // the measured property and a 14px fallback when measurement failed.
+    expect(css).toContain('.dpp-agent-container[data-restored="true"] .dpp-agent-step-body');
+    expect(css).toContain('font-size: var(--dpp-restored-body-font-size, 14px)');
   });
 });
