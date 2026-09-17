@@ -176,6 +176,16 @@ describe('inline-agent output compatibility contract', () => {
       [SUCCESS_EXECUTION, FAILED_EXECUTION],
       'en',
     );
+    // Descriptor reconciliation (uniform-tools task 3): when the background
+    // dropped requested tools, the continuation prompt prepends exactly ONE
+    // notice line naming them. The no-names continuation above must stay
+    // byte-identical to the released shape.
+    const continuationUnavailable = buildContinuationPrompt(
+      'Verify the compatibility contract and report exact evidence.',
+      [SUCCESS_EXECUTION],
+      'en',
+      ['Capture page', 'Execute command'],
+    );
     const nudge = buildNudgePrompt(
       '验证兼容性契约并报告证据。',
       '我会继续调用工具完成验证。',
@@ -184,7 +194,14 @@ describe('inline-agent output compatibility contract', () => {
       'zh-CN',
     );
 
-    expectUtf8Golden('inline/continuation-and-nudge.txt', `continuation:\n${continuation}\n\nnudge:\n${nudge}`);
+    expectUtf8Golden(
+      'inline/continuation-and-nudge.txt',
+      [
+        `continuation:\n${continuation}`,
+        `continuation-unavailable:\n${continuationUnavailable}`,
+        `nudge:\n${nudge}`,
+      ].join('\n\n'),
+    );
   });
 
   it('freezes exact resume prompt bytes for auto-resume after interrupted turns', () => {

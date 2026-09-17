@@ -41,6 +41,36 @@ At least one tool failed. Do not stop because of a recoverable error; read summa
 ]
 </tool_results>
 
+continuation-unavailable:
+Some requested tools are unavailable this run and cannot be used: Capture page, Execute command. Use only the tools listed below instead.
+These are the tool results just executed for the tool-continuation task. Continue like a real agent, using the original task and these tool results to move the work forward.
+If the results are enough, output the final answer. Only call more tools when more information, verification, or file changes are truly needed.
+Do not ask the user to click continue, and do not output pseudo tool-call JSON. When more action is needed, output only executable XML tool tags. Deliver files, HTML pages, and charts as Markdown fenced code blocks (e.g. ```html, ```xychart-beta, ```mermaid) so the page renders them natively; never use artifact XML tags.
+When emitting a ```xychart-beta fence, its body must use native Mermaid XY Chart syntax directly. Valid body example:
+title "ARR"
+x-axis ["2024-01", "2024-02"]
+y-axis "ARR ($B)" 0 --> 50
+line [1, 2]
+You may use bar [...]. Do not use x-label, y-label, chart-type, data:, series:, xy ..., or a Markdown table as the chart body.
+
+<original_task>
+Verify the compatibility contract and report exact evidence.
+</original_task>
+
+<tool_results>
+[
+  {
+    "tool": "capture_page",
+    "provider": "Browser Tools",
+    "ok": true,
+    "summary": "Captured the compatibility page",
+    "detail": "Title: Compatibility Contract",
+    "output": "{\"title\":\"Compatibility Contract\",\"url\":\"https://example.test/contracts\"}",
+    "truncated": false
+  }
+]
+</tool_results>
+
 nudge:
 上一轮回复没有包含任何可执行工具 XML，因此自动化续跑无法继续执行。
 请根据原始任务和工具结果二选一：
