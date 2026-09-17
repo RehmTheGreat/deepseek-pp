@@ -20,6 +20,7 @@ import {
   summarizeInlineAgentToolParams,
 } from '../core/inline-agent/display-text';
 import { createArtifactToolDescriptors } from '../core/artifact';
+import { withInlineAgentSubagentSpawnDescriptor } from '../core/inline-agent/subagent-tool';
 import type { ToolDescriptor } from '../core/types';
 import { buildAutomationToolContinuationPrompt } from '../core/automation/runner';
 import type { ToolExecutionRecord } from '../core/types';
@@ -355,6 +356,56 @@ describe('inline-agent model prompts', () => {
     expect(chinese).toContain('这是第 1 次无工具调用纠偏。');
   });
 
+  it('advertises the loop tool catalog including subagent_spawn on loop turns (uniform-tools task 4)', () => {
+    // The loop's descriptor set is the FULL runtime catalog plus spawn
+    // (content.ts passes withInlineAgentSubagentSpawnDescriptor(authorization
+    // .descriptors) into the payload). Continuation and nudge prompts must
+    // re-render that exact set in the SAME '### Tool' wire format the first
+    // turn's system section uses, so the model can keep calling tools — and
+    // discover subagent_spawn — mid-run. No descriptors → the released bytes.
+    const loopDescriptors = withInlineAgentSubagentSpawnDescriptor(
+      createArtifactToolDescriptors('en'),
+    );
+
+    const continuation = buildContinuationPrompt(
+      'Research docs',
+      [SUCCESS_EXECUTION],
+      'en',
+      undefined,
+      loopDescriptors,
+    );
+    expect(continuation).toContain('### Tool subagent_spawn');
+    expect(continuation).toContain('### Tool artifact_create');
+    // Identical wire format to the first turn (renderToolSchemas): the valid
+    // call format block the model already knows how to answer with.
+    expect(continuation).toContain('<subagent_spawn>\n{\n  "task": "value"\n}\n</subagent_spawn>');
+    // The section rides AFTER the tool results (instructions → task → results
+    // → the tools available for the next call).
+    expect(continuation.indexOf('</tool_results>')).toBeLessThan(
+      continuation.indexOf('### Tool subagent_spawn'),
+    );
+
+    const nudge = buildNudgePrompt(
+      'Research docs',
+      'I will continue.',
+      [SUCCESS_EXECUTION],
+      1,
+      'en',
+      loopDescriptors,
+    );
+    expect(nudge).toContain('### Tool subagent_spawn');
+    expect(nudge.indexOf('</tool_results_so_far>')).toBeLessThan(
+      nudge.indexOf('### Tool subagent_spawn'),
+    );
+
+    // Zero-descriptor payloads stay byte-identical to the released shape: no
+    // tool-schema section anywhere.
+    const continuationWithout = buildContinuationPrompt('Research docs', [SUCCESS_EXECUTION], 'en');
+    expect(continuationWithout).not.toContain('### Tool');
+    const nudgeWithout = buildNudgePrompt('Research docs', 'I will continue.', [SUCCESS_EXECUTION], 1, 'en');
+    expect(nudgeWithout).not.toContain('### Tool');
+  });
+
   it('builds resume prompts with the original task framing and no nudge semantics', () => {
     const english = buildResumePrompt('Research quarterly data', 1, 'en');
     const chinese = buildResumePrompt('调研季度数据', 2, 'zh-CN');
@@ -370,6 +421,9 @@ describe('inline-agent model prompts', () => {
       expect(prompt).toContain('</original_task>');
       // Nudge semantics do not apply to an interrupted stream.
       expect(prompt).not.toContain('<previous_assistant_text>');
+      // Uniform-tools task 4: resume carries chain context only — the tool
+      // schema section is never replayed here.
+      expect(prompt).not.toContain('### Tool');
     }
   });
 

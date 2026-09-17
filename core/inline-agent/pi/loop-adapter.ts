@@ -263,16 +263,20 @@ export async function runPiInlineAgentLoop(deps: PiLoopAdapterDeps): Promise<voi
         if (nudge.active) {
           nudge.active = false;
           nudge.currentTurnIsNudge = true;
-          return buildNudgePrompt(payload.originalPrompt, nudge.lastAssistantText, collectedExecutions, nudge.count, locale);
+          return buildNudgePrompt(payload.originalPrompt, nudge.lastAssistantText, collectedExecutions, nudge.count, locale, toolDescriptors);
         }
         // Descriptor reconciliation: dropped tools are named ONCE per line in
         // every continuation request, so the model stops calling tools the
         // grant no longer covers. Nudge/resume prompts are untouched.
+        // Uniform-tools task 4: every continuation request also carries the
+        // loop's tool-schema section (the payload catalog incl. spawn), so
+        // the model sees its callable tools on every loop turn.
         return buildContinuationPrompt(
           payload.originalPrompt,
           collectedExecutions,
           locale,
           payload.unavailableToolNames,
+          toolDescriptors,
         );
       },
       mapToolCall,
@@ -426,6 +430,7 @@ export async function runPiInlineAgentLoop(deps: PiLoopAdapterDeps): Promise<voi
             collectedExecutions,
             nudge.count,
             locale,
+            toolDescriptors,
           ),
           timestamp: Date.now(),
         }];

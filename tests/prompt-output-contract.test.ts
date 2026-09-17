@@ -10,6 +10,7 @@ import {
   INLINE_AGENT_CONTINUATION_PLACEHOLDER,
   normalizeInlineAgentFinalAnswerText,
 } from '../core/inline-agent/prompt';
+import { withInlineAgentSubagentSpawnDescriptor } from '../core/inline-agent/subagent-tool';
 import { augmentRequestBody } from '../core/interceptor/request-augmentation';
 import { normalizeMcpToolDescriptor, type McpServerConfig, type McpToolDefinition } from '../core/mcp';
 import { buildPromptAugmentation } from '../core/prompt';
@@ -194,12 +195,39 @@ describe('inline-agent output compatibility contract', () => {
       'zh-CN',
     );
 
+    // Uniform-tools task 4: when the loop payload carries the descriptor set
+    // (the full turn catalog plus subagent_spawn), the continuation and nudge
+    // prompts APPEND the same tool-schema section the first turn's system
+    // prompt renders. The loop descriptors here are the representative
+    // catalog above plus the spawn descriptor via the shared helper — the
+    // same shape content.ts passes into the loop payload.
+    const loopDescriptors = withInlineAgentSubagentSpawnDescriptor(
+      createRepresentativeToolDescriptors(),
+    );
+    const continuationTools = buildContinuationPrompt(
+      'Verify the compatibility contract and report exact evidence.',
+      [SUCCESS_EXECUTION, FAILED_EXECUTION],
+      'en',
+      undefined,
+      loopDescriptors,
+    );
+    const nudgeTools = buildNudgePrompt(
+      '验证兼容性契约并报告证据。',
+      '我会继续调用工具完成验证。',
+      [SUCCESS_EXECUTION],
+      1,
+      'zh-CN',
+      loopDescriptors,
+    );
+
     expectUtf8Golden(
       'inline/continuation-and-nudge.txt',
       [
         `continuation:\n${continuation}`,
         `continuation-unavailable:\n${continuationUnavailable}`,
+        `continuation-tools:\n${continuationTools}`,
         `nudge:\n${nudge}`,
+        `nudge-tools:\n${nudgeTools}`,
       ].join('\n\n'),
     );
   });

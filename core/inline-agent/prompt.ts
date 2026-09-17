@@ -1,5 +1,6 @@
 import { DEFAULT_LOCALE, translate, type SupportedLocale } from '../i18n';
-import type { ToolError, ToolExecutionRecord } from '../types';
+import { renderToolSchemas } from '../prompt/augmentation';
+import type { ToolDescriptor, ToolError, ToolExecutionRecord } from '../types';
 
 const PENDING_ACTION_RE = /(?:我(?:将|会|想|要|先|让|再|直接|现在|继续|尝试|开始|需要|还需要|仍需|打算|计划|马上|随后|稍后|先去|先来|接下来).{0,48}(?:调用|创建|编辑|检查|验证|生成|保存|尝试|搜索|获取|打开|执行|查看|访问|读取|抓取|下载|上传|修改|更新|删除|写入|分析|比对|比较|监控|查询|发送|提交|安装|启动|停止|清理|转换|解析|提取|汇总|整理|核对|核实|扫描|截屏|渲染)|(?:接下来|下一步|然后|让我|先让我).{0,48}(?:调用|创建|编辑|检查|验证|生成|保存|尝试|搜索|获取|打开|执行|查看|访问|读取|抓取|下载|上传|修改|更新|删除|写入|分析|比对|比较|监控|查询|发送|提交|安装|启动|停止|清理|转换|解析|提取|汇总|整理|核对|核实|扫描|截屏|渲染)|(?:(?:现在|这就|马上|随后|稍后|立即|立刻|先|直接))?(?:为|帮)(?:你|您)(?:创建|生成|制作|输出|编写|绘制|渲染)(?!了|好|完|成|过|的)|(?:i(?:'ll| will|'m| am|'d| would| want to| should| have to| (?:still\s+)?need to|'m going to| am going to|'m about to| am about to|'ve got to| have got to)|let me|let's|next,? (?:i|we)|we(?:'ll| will| need to| can)|(?:my|the) next step is to).{0,64}(?:call|create|edit|inspect|validate|generate|save|try|search|fetch|open|run|browse|read|check|look|use|verify|test|download|write|update|review|analyze|extract|query|send|post|investigate|monitor|compare|install|start|stop|convert|parse|list|collect|request|retry|scroll|click|type|navigate))/gi;
 const NUDGE_DECISION_TAIL_MAX_CHARS = 600;
@@ -166,12 +167,20 @@ function hasPendingActionAtTail(text: string): boolean {
  * localized line is PREPENDED naming them, so the model does not call them
  * again and uses the tools that are actually granted below. Absent/empty →
  * the released continuation bytes, unchanged.
+ *
+ * `toolDescriptors` carries the loop's model-facing descriptor set (the FULL
+ * runtime catalog plus subagent_spawn). When present, the SAME '### Tool'
+ * schema section the first turn's system prompt uses is APPENDED after the
+ * tool results, so the model sees its callable tools — including
+ * subagent_spawn — on every loop turn. Absent/empty → no section, released
+ * bytes.
  */
 export function buildContinuationPrompt(
   originalTask: string,
   executions: ToolExecutionRecord[],
   locale: SupportedLocale = DEFAULT_LOCALE,
   unavailableToolNames?: readonly string[],
+  toolDescriptors?: readonly ToolDescriptor[],
 ): string {
   const hasFailures = executions.some((e) => !e.result.ok);
   const results = renderWindowedToolResults(executions);
@@ -200,6 +209,7 @@ export function buildContinuationPrompt(
     '<tool_results>',
     JSON.stringify(results, null, 2),
     '</tool_results>',
+    ...renderLoopToolSection(toolDescriptors, locale),
   ].join('\n');
 }
 
@@ -234,6 +244,7 @@ export function buildNudgePrompt(
   executions: ToolExecutionRecord[],
   nudgeCount: number,
   locale: SupportedLocale = DEFAULT_LOCALE,
+  toolDescriptors?: readonly ToolDescriptor[],
 ): string {
   const results = renderWindowedToolResults(executions);
 
@@ -256,7 +267,25 @@ export function buildNudgePrompt(
     '<tool_results_so_far>',
     JSON.stringify(results, null, 2),
     '</tool_results_so_far>',
+    ...renderLoopToolSection(toolDescriptors, locale),
   ].join('\n');
+}
+
+/**
+ * The loop's tool-schema advertisement (uniform-tools task 4): the SAME
+ * `renderToolSchemas` rendering the first turn's system section uses
+ * (`### Tool <name>` blocks with the valid call format), appended after the
+ * tool results so the model sees its callable tools — including
+ * `subagent_spawn` — on every loop turn. No descriptors → empty (released
+ * bytes). Resume prompts deliberately never call this: the resume turn
+ * carries chain context only.
+ */
+function renderLoopToolSection(
+  toolDescriptors: readonly ToolDescriptor[] | undefined,
+  locale: SupportedLocale,
+): string[] {
+  if (!toolDescriptors?.length) return [];
+  return ['', renderToolSchemas(toolDescriptors, locale)];
 }
 
 function renderWindowedToolResults(executions: ToolExecutionRecord[]) {

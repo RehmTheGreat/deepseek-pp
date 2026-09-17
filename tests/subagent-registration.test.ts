@@ -10,6 +10,10 @@ import {
 import { deriveChildToolDescriptors } from '../core/inline-agent/subagent';
 import { translate } from '../core/i18n/background';
 import type { DeepSeekSessionState } from '../core/inline-agent/pi/stream-fn-port';
+import type {
+  RawStorageSlot,
+  StorageSlotPort,
+} from '../core/persistence/versioned-repository';
 import type { ToolDescriptor } from '../core/types';
 
 const adapterMocks = vi.hoisted(() => ({
@@ -22,6 +26,10 @@ vi.mock('../core/deepseek/adapter', () => ({
   createPowHeaders: adapterMocks.createPowHeaders,
   submitPromptStreaming: adapterMocks.submitPromptStreaming,
 }));
+
+const { createInlineAgentSubagentRunner } = await import('../core/inline-agent/subagent');
+const { runInlineAgentLoop } = await import('../core/inline-agent/loop');
+const { createInlineAgentTraceStore } = await import('../core/inline-agent/trace-store');
 
 function descriptor(invocationName: string): ToolDescriptor {
   return {
@@ -410,5 +418,207 @@ describe('M5 chain-anchor accessor (M4 wiring note 3)', () => {
     // a spawn call must hand the engine as its chainParentMessageId.
     expect(sessionRef.current).not.toBeNull();
     expect(sessionRef.current?.parentMessageId).toBe(555);
+  });
+});
+
+describe('E2E advertisement + spawn flow (uniform-tools task 4)', () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+    adapterMocks.createPowHeaders.mockResolvedValue({ 'X-DS-PoW-Response': 'pow-1' });
+  });
+
+  afterEach(() => {
+    vi.useRealTimers();
+  });
+
+  function createMemorySlot(initial: RawStorageSlot): StorageSlotPort {
+    let slot = initial;
+    return {
+      read: vi.fn(async () => slot),
+      write: vi.fn(async (value: unknown) => {
+        slot = { present: true, value };
+      }),
+      remove: vi.fn(async () => {
+        slot = { present: false };
+      }),
+    };
+  }
+
+  it('advertises subagent_spawn on the loop turn, executes the emitted spawn through the authorized runner, and resolves the parent tool result with the child outcome', async () => {
+    vi.useFakeTimers();
+    // Wire choreography over ONE mocked DS adapter, in call order:
+    //   request 1 — parent turn 1: streams the spawn XML (the model saw the
+    //               advertised `### Tool subagent_spawn` section).
+    //   request 2 — child turn 1: streams the child's final answer.
+    //   request 3 — parent turn 2: streams the parent's final answer.
+    adapterMocks.submitPromptStreaming
+      .mockImplementationOnce(async (_input: unknown, handlers: { onTextChunk: (t: string) => void }) => {
+        handlers.onTextChunk('<subagent_spawn>{"task":"Summarize the report"}</subagent_spawn>');
+        return { assistantText: '', responseMessageId: 102, requestMessageId: 101, finished: true };
+      })
+      .mockImplementationOnce(async (_input: unknown, handlers: { onTextChunk: (t: string) => void }) => {
+        handlers.onTextChunk('child final answer.');
+        return { assistantText: '', responseMessageId: 202, requestMessageId: 201, finished: true };
+      })
+      .mockImplementationOnce(async (_input: unknown, handlers: { onTextChunk: (t: string) => void }) => {
+        handlers.onTextChunk('Parent done with the child outcome.');
+        return { assistantText: '', responseMessageId: 104, requestMessageId: 103, finished: true };
+      });
+
+    // The loop payload's descriptor set mirrors content.ts: the full catalog
+    // (shell_exec included) plus spawn, from the shared helper.
+    const loopDescriptors = withInlineAgentSubagentSpawnDescriptor([
+      descriptor('web_search'),
+      descriptor('shell_exec'),
+      descriptor('artifact_create'),
+    ]);
+    const store = createInlineAgentTraceStore(createMemorySlot({ present: false }));
+    const controller = new AbortController();
+    const sessionRef: { current: DeepSeekSessionState | null } = { current: null };
+    const claimedSpawnCallIds = new Set<string>();
+    const events: Array<{ type: string; data: unknown }> = [];
+
+    // Child execution path (the content.ts authorized executor shape):
+    // non-spawn calls fall through to the grant path; spawn calls parse →
+    // claim → runner.spawn → describe, exactly like the released executor.
+    const backgroundExecuteTool = vi.fn(async (call: { name: string }) => {
+      throw new Error(`unexpected non-spawn call reached the grant path: ${call.name}`);
+    });
+    const runner = createInlineAgentSubagentRunner({
+      parentTraceId: 'trace-4',
+      parentLoopId: 'loop-4',
+      chatSessionId: 'chat-1',
+      traceUrl: 'https://chat.deepseek.com/a/chat/s/chat-1',
+      promptOptions: { modelType: null, searchEnabled: false, thinkingEnabled: false, refFileIds: [] },
+      toolDescriptors: loopDescriptors,
+      executeTool: backgroundExecuteTool,
+      signal: controller.signal,
+      upsertTrace: (trace) => store.upsert(trace),
+      locale: 'en',
+    });
+    const executeTool = vi.fn(async (call: {
+      id?: string;
+      name: string;
+      invocationName?: string;
+      payload: unknown;
+      source?: { trigger?: string };
+    }) => {
+      if (!isInlineAgentSubagentSpawnCall(call)) return backgroundExecuteTool(call);
+      const parsed = parseInlineAgentSubagentSpawnPayload(call.payload);
+      if (!parsed.ok) {
+        return {
+          name: call.name,
+          result: {
+            ok: false,
+            summary: parsed.message,
+            error: { code: 'subagent_payload_invalid' as const, message: parsed.message, retryable: true },
+          },
+        };
+      }
+      const claim = claimInlineAgentSubagentSpawnCall(claimedSpawnCallIds, call.id ?? '');
+      if (!claim.ok) {
+        return {
+          name: call.name,
+          result: {
+            ok: false,
+            summary: claim.message,
+            error: { code: 'subagent_call_replayed' as const, message: claim.message, retryable: false },
+          },
+        };
+      }
+      const spawnResult = await runner.spawn({
+        payload: parsed.payload,
+        chainParentMessageId: sessionRef.current?.parentMessageId ?? 100,
+      });
+      const described = describeInlineAgentSubagentSpawnResult('en', spawnResult);
+      return {
+        name: call.name,
+        result: {
+          ok: described.ok,
+          summary: described.summary,
+          detail: described.detail,
+          error: described.error,
+        },
+      };
+    });
+
+    const run = runInlineAgentLoop(
+      {
+        loopId: 'loop-4',
+        chatSessionId: 'chat-1',
+        parentMessageId: 100,
+        originalPrompt: 'Parent task needing a subagent.',
+        agentTaskPrompt: 'Parent task needing a subagent.',
+        toolExecutions: [],
+        promptOptions: { modelType: null, searchEnabled: false, thinkingEnabled: false, refFileIds: [] },
+        toolDescriptors: loopDescriptors,
+        locale: 'en',
+      },
+      {
+        post: (type, data) => {
+          events.push({ type, data });
+        },
+        executeTool,
+        signal: controller.signal,
+        sessionRef,
+      },
+    );
+    // Covers the spawn execution, the child loop, and the parent's paced
+    // continuation request (max 6.5s); far below the child's 180s deadline.
+    await vi.advanceTimersByTimeAsync(7_000);
+    await run;
+
+    // 1. ADVERTISEMENT: the parent's first loop request — the one the model
+    // answered with the spawn call — carried the tool schema section in the
+    // first-turn '### Tool' wire format, spawn included (task 1 widened the
+    // set to the full catalog: shell_exec rides along).
+    const calls = adapterMocks.submitPromptStreaming.mock.calls;
+    expect(calls).toHaveLength(3); // parent turn 1 → child turn → parent turn 2
+    const parentFirstPrompt = String((calls[0]?.[0] as { prompt?: string }).prompt ?? '');
+    expect(parentFirstPrompt).toContain('### Tool subagent_spawn');
+    expect(parentFirstPrompt).toContain('### Tool shell_exec');
+    expect(parentFirstPrompt).toContain('<subagent_spawn>');
+    // 2. DEPTH SEAM IN THE ADVERTISEMENT: the child's own loop request (call
+    // 2) renders the derived (spawn-free) catalog — children never see spawn.
+    const childPrompt = String((calls[1]?.[0] as { prompt?: string }).prompt ?? '');
+    expect(childPrompt).toContain('### Tool web_search');
+    expect(childPrompt).not.toContain('subagent_spawn');
+    // The parent's continuation after the child outcome advertises again.
+    const parentSecondPrompt = String((calls[2]?.[0] as { prompt?: string }).prompt ?? '');
+    expect(parentSecondPrompt).toContain('### Tool subagent_spawn');
+
+    // 3. PARSE + EXECUTE: the spawn call reached the authorized path bound to
+    // the agent-run trigger, and the claim set consumed exactly one id.
+    expect(executeTool).toHaveBeenCalledTimes(1);
+    const spawnCall = executeTool.mock.calls[0]?.[0] as {
+      name: string;
+      payload: { task: string };
+      source?: { trigger?: string };
+    };
+    expect(spawnCall.name).toBe('subagent_spawn');
+    expect(spawnCall.payload).toEqual({ task: 'Summarize the report' });
+    expect(spawnCall.source?.trigger).toBe('agent_run');
+    expect(claimedSpawnCallIds.size).toBe(1);
+    expect(backgroundExecuteTool).not.toHaveBeenCalled();
+
+    // 4. CHILD OUTCOME → PARENT TOOL RESULT: the parent's recorded spawn
+    // execution carries the child's final answer as its summary, and the
+    // child trace closed honestly as complete.
+    const stepComplete = events.find((event) => event.type === 'AGENT_STEP_COMPLETE') as
+      | { data: { toolExecutions: Array<{ name: string; result: { ok: boolean; summary: string } }> } }
+      | undefined;
+    expect(stepComplete).toBeDefined();
+    const spawnRecord = stepComplete!.data.toolExecutions.find((record) => record.name === 'subagent_spawn');
+    expect(spawnRecord).toBeDefined();
+    expect(spawnRecord!.result.ok).toBe(true);
+    expect(spawnRecord!.result.summary).toBe('child final answer.');
+    const rows = await store.read();
+    const childRow = rows.find((row) => row.parentTraceId === 'trace-4');
+    expect(childRow).toBeDefined();
+    expect(childRow).toMatchObject({ status: 'complete', finalText: 'child final answer.' });
+
+    // 5. PARENT RESOLUTION: the loop completed with the post-spawn turn.
+    expect(events.some((event) => event.type === 'AGENT_LOOP_COMPLETE')).toBe(true);
+    expect(events.some((event) => event.type === 'AGENT_LOOP_ERROR')).toBe(false);
   });
 });
