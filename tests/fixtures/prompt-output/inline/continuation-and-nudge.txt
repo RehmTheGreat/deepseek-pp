@@ -71,6 +71,109 @@ Verify the compatibility contract and report exact evidence.
 ]
 </tool_results>
 
+continuation-tools:
+These are the tool results just executed for the tool-continuation task. Continue like a real agent, using the original task and these tool results to move the work forward.
+If the results are enough, output the final answer. Only call more tools when more information, verification, or file changes are truly needed.
+Do not ask the user to click continue, and do not output pseudo tool-call JSON. When more action is needed, output only executable XML tool tags. Deliver files, HTML pages, and charts as Markdown fenced code blocks (e.g. ```html, ```xychart-beta, ```mermaid) so the page renders them natively; never use artifact XML tags.
+When emitting a ```xychart-beta fence, its body must use native Mermaid XY Chart syntax directly. Valid body example:
+title "ARR"
+x-axis ["2024-01", "2024-02"]
+y-axis "ARR ($B)" 0 --> 50
+line [1, 2]
+You may use bar [...]. Do not use x-label, y-label, chart-type, data:, series:, xy ..., or a Markdown table as the chart body.
+
+<original_task>
+Verify the compatibility contract and report exact evidence.
+</original_task>
+At least one tool failed. Do not stop because of a recoverable error; read summary/detail/error, fix the parameters or choose a suitable next step, and continue completing the task.
+
+<tool_results>
+[
+  {
+    "tool": "capture_page",
+    "provider": "Browser Tools",
+    "ok": true,
+    "summary": "Captured the compatibility page",
+    "detail": "Title: Compatibility Contract",
+    "output": "{\"title\":\"Compatibility Contract\",\"url\":\"https://example.test/contracts\"}",
+    "truncated": false
+  },
+  {
+    "tool": "shell_exec",
+    "provider": "Shell Local",
+    "ok": false,
+    "summary": "Command failed",
+    "detail": "exit code 2",
+    "error": {
+      "code": "shell_exit_nonzero",
+      "message": "Command exited with code 2",
+      "retryable": true
+    },
+    "truncated": false
+  }
+]
+</tool_results>
+
+### Shell MCP Capability
+Shell MCP is connected through the extension. You can execute local CLI commands by emitting the executable XML tool tag; do not say you cannot run commands when this tool is listed.
+Use <shell_exec> with a JSON body such as {"command":"officecli --version","timeout_ms":60000} to run OfficeCLI or other local CLI tools.
+Match command syntax to shell_status.shell. On Windows the Shell Local host uses PowerShell by default, so list files with commands such as Get-ChildItem -LiteralPath "D:\\Documents\\Downloads\\CN" -File | Select-Object -ExpandProperty FullName, and quote paths once inside the command string. Use cmd.exe /c explicitly only when you need CMD syntax such as dir /b.
+For multi-step workflows (e.g. OfficeCLI create + open + add, or anything that needs to keep cd/export state) use a persistent session: open it with <shell_session_begin>{"cwd":"/path"}</shell_session_begin>, run each command with <shell_session_exec>{"session_id":"...","command":"..."}</shell_session_exec>, then close with <shell_session_end>{"session_id":"..."}</shell_session_end>. Take the session_id from the begin result. Every shell_session_exec reuses the same shell, so the working directory, exported variables, and resident processes persist across calls; the session auto-closes after roughly 5 minutes idle.
+Recognized shell tool names: shell_exec, shell_status, python_status, python_exec, local_skill_preview, local_folder_pick, local_file_stat, local_file_read, local_file_write, shell_session_begin, shell_session_exec, shell_session_end
+
+### Tool memory_save
+Title: Save memory
+Description: Save a new long-term memory
+Valid call format for memory_save:
+<memory_save>
+{
+  "type": "user",
+  "name": "value",
+  "content": "value",
+  "tags": []
+}
+</memory_save>
+Invalid formats: <invoke name="memory_save">...</invoke>, <tool_call>...</tool_call>
+Parameters JSON Schema: {"type":"object","properties":{"type":{"type":"string","enum":["user","feedback","topic","reference"],"description":"Memory type: user=identity, role, or preference; feedback=behavior correction; topic=discussion notes; reference=external resource link"},"name":{"type":"string","description":"Short title"},"content":{"type":"string","description":"Content to save"},"tags":{"type":"array","items":{"type":"string"},"description":"Tag list"}},"required":["type","name","content","tags"],"additionalProperties":false}
+
+### Tool capture_page
+Title: Capture page
+Description: Capture a browser page for compatibility evidence.
+Accepted tag names: mcp_browser_tools_capture_page, capture_page
+Valid call format for capture_page:
+<capture_page>
+{
+  "url": "value"
+}
+</capture_page>
+Invalid formats: <invoke name="capture_page">...</invoke>, <tool_call>...</tool_call>
+Parameters JSON Schema: {"type":"object","properties":{"url":{"type":"string","description":"Page URL"},"fullPage":{"type":"boolean","description":"Capture the full page"}},"required":["url"],"additionalProperties":false}
+
+### Tool shell_exec
+Title: Execute command
+Description: Execute a local shell command and return stdout, stderr, and the exit code.
+Accepted tag names: mcp_shell_local_shell_exec, shell_exec
+Valid call format for shell_exec:
+<shell_exec>
+{
+  "command": "value"
+}
+</shell_exec>
+Invalid formats: <invoke name="shell_exec">...</invoke>, <tool_call>...</tool_call>
+Parameters JSON Schema: {"type":"object","properties":{"command":{"type":"string","description":"Shell command"},"cwd":{"type":"string","description":"Working directory file path"}},"required":["command"],"additionalProperties":false}
+
+### Tool subagent_spawn
+Title: 运行子代理
+Description: 启动一个聚焦的子代理任务来执行一个自包含的任务，并用其结果继续当前任务。子代理不能再启动子代理，使用本对话的工具（可用 toolAllowlistHint 收窄），其最终回答将作为本工具的结果返回。
+Valid call format for subagent_spawn:
+<subagent_spawn>
+{
+  "task": "value"
+}
+</subagent_spawn>
+Invalid formats: <invoke name="subagent_spawn">...</invoke>, <tool_call>...</tool_call>
+Parameters JSON Schema: {"type":"object","properties":{"task":{"type":"string","description":"子代理任务的完整、自包含描述，需包含目标、上下文与期望交付物。"},"toolAllowlistHint":{"type":"array","items":{"type":"string"},"description":"可选的提示性工具名单：仅列出应暴露给子代理的工具名称，未列出的工具将被隐藏，未知名称将被忽略。"}},"required":["task"],"additionalProperties":false}
+
 nudge:
 上一轮回复没有包含任何可执行工具 XML，因此自动化续跑无法继续执行。
 请根据原始任务和工具结果二选一：
@@ -105,3 +208,98 @@ line [1, 2]
   }
 ]
 </tool_results_so_far>
+
+nudge-tools:
+上一轮回复没有包含任何可执行工具 XML，因此自动化续跑无法继续执行。
+请根据原始任务和工具结果二选一：
+1. 如果任务仍未完成，本轮必须直接输出下一步可执行工具 XML。
+2. 如果任务已经完成，输出 <task_complete>{"summary":"..."}</task_complete>。文件、HTML 页面与图表等交付物用 Markdown 围栏代码块输出（如 ```html、```xychart-beta），不要使用 artifact XML 标签。
+若输出 ```xychart-beta 围栏，正文必须直接使用 Mermaid XY Chart 原生语法。有效正文示例：
+title "ARR"
+x-axis ["2024-01", "2024-02"]
+y-axis "ARR ($B)" 0 --> 50
+line [1, 2]
+可使用 bar [...]；不要使用 x-label、y-label、chart-type、data:、series:、xy ... 或 Markdown 表格充当图表正文。
+这是第 1 次无工具调用纠偏。
+
+<original_task>
+验证兼容性契约并报告证据。
+</original_task>
+
+<previous_assistant_text>
+我会继续调用工具完成验证。
+</previous_assistant_text>
+
+<tool_results_so_far>
+[
+  {
+    "tool": "capture_page",
+    "provider": "Browser Tools",
+    "ok": true,
+    "summary": "Captured the compatibility page",
+    "detail": "Title: Compatibility Contract",
+    "output": "{\"title\":\"Compatibility Contract\",\"url\":\"https://example.test/contracts\"}",
+    "truncated": false
+  }
+]
+</tool_results_so_far>
+
+### Shell MCP 能力
+Shell MCP 已通过扩展连接。你可以通过输出可执行 XML 工具标签来执行本地 CLI 命令；当该工具列出时，不要说自己不能运行命令。
+使用 <shell_exec>，JSON body 例如 {"command":"officecli --version","timeout_ms":60000}，以运行 OfficeCLI 或其他本地 CLI 工具。
+命令语法必须匹配 shell_status.shell。Windows 下 Shell Local 默认使用 PowerShell，因此列文件可使用 Get-ChildItem -LiteralPath "D:\\Documents\\Downloads\\CN" -File | Select-Object -ExpandProperty FullName，并在 command 字符串内正确引用路径。仅在确实需要 CMD 语法（如 dir /b）时显式使用 cmd.exe /c。
+多步骤工作流（例如 OfficeCLI 的 create + open + add，或需要保留 cd/export 状态）应使用持久会话：先 <shell_session_begin>{"cwd":"/path"}</shell_session_begin>，再用 <shell_session_exec>{"session_id":"...","command":"..."}</shell_session_exec> 逐条执行，完成后 <shell_session_end>{"session_id":"..."}</shell_session_end>。session_id 在 begin 返回值中获取。每个 shell_session_exec 共享同一 shell，工作目录、环境变量与常驻进程会跨调用保留；会话闲置约 5 分钟后自动关闭。
+可识别的 shell 工具名：shell_exec, shell_status, python_status, python_exec, local_skill_preview, local_folder_pick, local_file_stat, local_file_read, local_file_write, shell_session_begin, shell_session_exec, shell_session_end
+
+### Tool memory_save
+Title: Save memory
+Description: Save a new long-term memory
+Valid call format for memory_save:
+<memory_save>
+{
+  "type": "user",
+  "name": "value",
+  "content": "value",
+  "tags": []
+}
+</memory_save>
+Invalid formats: <invoke name="memory_save">...</invoke>, <tool_call>...</tool_call>
+Parameters JSON Schema: {"type":"object","properties":{"type":{"type":"string","enum":["user","feedback","topic","reference"],"description":"Memory type: user=identity, role, or preference; feedback=behavior correction; topic=discussion notes; reference=external resource link"},"name":{"type":"string","description":"Short title"},"content":{"type":"string","description":"Content to save"},"tags":{"type":"array","items":{"type":"string"},"description":"Tag list"}},"required":["type","name","content","tags"],"additionalProperties":false}
+
+### Tool capture_page
+Title: Capture page
+Description: Capture a browser page for compatibility evidence.
+Accepted tag names: mcp_browser_tools_capture_page, capture_page
+Valid call format for capture_page:
+<capture_page>
+{
+  "url": "value"
+}
+</capture_page>
+Invalid formats: <invoke name="capture_page">...</invoke>, <tool_call>...</tool_call>
+Parameters JSON Schema: {"type":"object","properties":{"url":{"type":"string","description":"Page URL"},"fullPage":{"type":"boolean","description":"Capture the full page"}},"required":["url"],"additionalProperties":false}
+
+### Tool shell_exec
+Title: Execute command
+Description: Execute a local shell command and return stdout, stderr, and the exit code.
+Accepted tag names: mcp_shell_local_shell_exec, shell_exec
+Valid call format for shell_exec:
+<shell_exec>
+{
+  "command": "value"
+}
+</shell_exec>
+Invalid formats: <invoke name="shell_exec">...</invoke>, <tool_call>...</tool_call>
+Parameters JSON Schema: {"type":"object","properties":{"command":{"type":"string","description":"Shell command"},"cwd":{"type":"string","description":"Working directory file path"}},"required":["command"],"additionalProperties":false}
+
+### Tool subagent_spawn
+Title: 运行子代理
+Description: 启动一个聚焦的子代理任务来执行一个自包含的任务，并用其结果继续当前任务。子代理不能再启动子代理，使用本对话的工具（可用 toolAllowlistHint 收窄），其最终回答将作为本工具的结果返回。
+Valid call format for subagent_spawn:
+<subagent_spawn>
+{
+  "task": "value"
+}
+</subagent_spawn>
+Invalid formats: <invoke name="subagent_spawn">...</invoke>, <tool_call>...</tool_call>
+Parameters JSON Schema: {"type":"object","properties":{"task":{"type":"string","description":"子代理任务的完整、自包含描述，需包含目标、上下文与期望交付物。"},"toolAllowlistHint":{"type":"array","items":{"type":"string"},"description":"可选的提示性工具名单：仅列出应暴露给子代理的工具名称，未列出的工具将被隐藏，未知名称将被忽略。"}},"required":["task"],"additionalProperties":false}
