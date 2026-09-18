@@ -14,19 +14,17 @@ import {
   findFirstXmlToolTag,
   getPartialXmlToolTagTailLength,
 } from '../tool/xml-tags';
+import { findDsmlTag, getDsmlShapeTailLength } from './dsml-delimiters';
 
 const STREAM_TOOL_RAW_MAX_LENGTH = 2048;
 const TRUNCATION_SUFFIX = '\n...[truncated]';
 const EXTERNALIZE_BODY_THRESHOLD_CHARS = 64_000;
 const STREAM_TOOL_BODY_MAX_CHARS = 1_048_576;
-// Foreign close literals emitted by models trained on a generic `<invoke>`
-// wire format. Kept local so the streaming bundle stays independent of the
-// batch tool-parser module (main-world/content entrypoints import only this).
-// The double-bar literal is the corrupted legacy analogue (P0.2 near-miss
-// delimiter policy): it bounds a mismatched-close XML call exactly like the
-// single-bar form.
-const INVOKE_CLOSE_TERMINATOR_LEGACY = '</｜DSML｜invoke>';
-const INVOKE_CLOSE_TERMINATOR_LEGACY_DOUBLE = '</｜｜DSML｜invoke>';
+// Foreign close emitted by models trained on a generic `<invoke>` wire format.
+// The DSML analogue is scanned in EVERY bar shape through the shared
+// delimiter truth (core/interceptor/dsml-delimiters.ts) — total capture, pc
+// directive 1 — with the canonical single-bar literal as the message label.
+const INVOKE_CLOSE_TERMINATOR_LEGACY_LABEL = '</｜DSML｜invoke>';
 const INVOKE_CLOSE_TERMINATOR_PLAIN = '</invoke>';
 
 export interface StreamingToolCallParserEvent {
@@ -223,8 +221,15 @@ class XmlStreamingToolCallParser implements StreamingToolCallParser {
 
     const foreignClose = findFirstXmlToolTag(text, this.invocationNames, { closing: true });
     if (foreignClose) consider(foreignClose.index, `</${foreignClose.name}>`);
-    consider(text.indexOf(INVOKE_CLOSE_TERMINATOR_LEGACY), INVOKE_CLOSE_TERMINATOR_LEGACY);
-    consider(text.indexOf(INVOKE_CLOSE_TERMINATOR_LEGACY_DOUBLE), INVOKE_CLOSE_TERMINATOR_LEGACY_DOUBLE);
+    // DSML invoke close in ANY bar shape (1..8 each side, whitespace-tolerant,
+    // any wrapper context) — the shared generalized scanner, same linear cost
+    // as the old exact literals.
+    const dsmlClose = findDsmlTag(
+      text,
+      0,
+      (tag) => tag.closing && tag.name === 'invoke',
+    );
+    if (dsmlClose) consider(dsmlClose.index, INVOKE_CLOSE_TERMINATOR_LEGACY_LABEL);
     consider(text.indexOf(INVOKE_CLOSE_TERMINATOR_PLAIN), INVOKE_CLOSE_TERMINATOR_PLAIN);
     const nextOpen = findFirstXmlToolTag(text, this.invocationNames, { closing: false });
     if (nextOpen) consider(nextOpen.index, `<${nextOpen.name}>`);
@@ -387,24 +392,20 @@ function createEmptyParserEvent(): StreamingToolCallParserEvent {
 }
 
 /**
- * Longest suffix of `text` that is a proper prefix of a legacy (single- or
- * corrupted double-bar) / plain `</invoke>` close literal, so a foreign
- * terminator split across chunks stays in the pending buffer until complete.
- * Bounded by the literal lengths (≤16 chars), i.e. constant work per chunk.
+ * Longest suffix of `text` that is a proper prefix of a foreign close
+ * terminator: the plain `</invoke>` literal, or ANY partial DSML tag shape
+ * (single/double/any bar count) via the shared
+ * {@link getDsmlShapeTailLength} — so a DSML terminator split across chunks
+ * stays in the pending buffer until complete. Bounded by the DSML partial
+ * cap plus the plain literal length, i.e. constant work per chunk.
  */
 function getInvokeCloseTailLength(text: string): number {
-  let longest = 0;
-  for (const literal of [
-    INVOKE_CLOSE_TERMINATOR_LEGACY,
-    INVOKE_CLOSE_TERMINATOR_LEGACY_DOUBLE,
-    INVOKE_CLOSE_TERMINATOR_PLAIN,
-  ]) {
-    const max = Math.min(text.length, literal.length - 1);
-    for (let length = max; length > longest; length -= 1) {
-      if (literal.startsWith(text.slice(text.length - length))) {
-        longest = length;
-        break;
-      }
+  let longest = getDsmlShapeTailLength(text);
+  const max = Math.min(text.length, INVOKE_CLOSE_TERMINATOR_PLAIN.length - 1);
+  for (let length = max; length > longest; length -= 1) {
+    if (INVOKE_CLOSE_TERMINATOR_PLAIN.startsWith(text.slice(text.length - length))) {
+      longest = length;
+      break;
     }
   }
   return longest;

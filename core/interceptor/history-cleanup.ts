@@ -16,13 +16,8 @@ import {
   type ToolInvocationCatalog,
 } from '../tool';
 import { findFirstXmlToolTag } from '../tool/xml-tags';
-import {
-  DOUBLE_BAR_TOOL_CALLS_CLOSE_TAG,
-  DOUBLE_BAR_TOOL_CALLS_OPEN_TAG,
-  extractToolCalls,
-  LEGACY_TOOL_CALLS_CLOSE_TAG,
-  LEGACY_TOOL_CALLS_OPEN_TAG,
-} from './tool-parser';
+import { extractToolCalls } from './tool-parser';
+import { findDsmlTag, findNextDsmlToolBlock } from './dsml-delimiters';
 
 const RESTORE_FULL_PARSE_MAX_LENGTH = 120_000;
 const RESTORE_CONTENT_MAX_LENGTH = 8000;
@@ -413,10 +408,12 @@ function findXmlToolBlocks(
 }
 
 /**
- * Legacy `｜DSML｜tool_calls` blocks (linear scan). One combined scan in
- * document order claims each block — the earliest opener wins, single-bar or
- * corrupted double-bar (P0.2) — mirroring the tool-parser extraction claims so
- * the strip path removes exactly what the parsers recognize, no more, no less.
+ * DSML tool blocks (linear scan) via the shared generalized claim scanner
+ * (`findNextDsmlToolBlock`, core/interceptor/dsml-delimiters.ts): both
+ * wrapper names, wrapperless invoke blocks, any bar shape 1..8, tolerated
+ * whitespace, closers of ANY bar shape, unclosed openers claiming to EOF —
+ * mirroring the tool-parser extraction claims exactly so the history strip
+ * removes exactly what the parsers recognize, no more, no less.
  */
 function findLegacyToolBlocks(
   text: string,
@@ -426,28 +423,17 @@ function findLegacyToolBlocks(
   let searchFrom = 0;
 
   while (searchFrom < text.length) {
-    const singleOpenIndex = text.indexOf(LEGACY_TOOL_CALLS_OPEN_TAG, searchFrom);
-    const doubleOpenIndex = text.indexOf(DOUBLE_BAR_TOOL_CALLS_OPEN_TAG, searchFrom);
-    const corrupted = doubleOpenIndex !== -1
-      && (singleOpenIndex === -1 || doubleOpenIndex < singleOpenIndex);
-    const openTag = corrupted ? DOUBLE_BAR_TOOL_CALLS_OPEN_TAG : LEGACY_TOOL_CALLS_OPEN_TAG;
-    const closeTag = corrupted ? DOUBLE_BAR_TOOL_CALLS_CLOSE_TAG : LEGACY_TOOL_CALLS_CLOSE_TAG;
-    const openIndex = corrupted ? doubleOpenIndex : singleOpenIndex;
-    if (openIndex === -1) break;
-
-    const closeIndex = text.indexOf(closeTag, openIndex + openTag.length);
-    const complete = closeIndex !== -1;
-    const end = complete ? closeIndex + closeTag.length : text.length;
+    const block = findNextDsmlToolBlock(text, searchFrom);
+    if (!block) break;
     blocks.push({
-      start: openIndex,
-      end,
-      invocationNames: complete
-        ? findLegacyInvocationNames(text, openIndex, end, catalog, corrupted)
+      start: block.openIndex,
+      end: block.endIndex,
+      invocationNames: block.closed
+        ? findLegacyInvocationNames(text, block.openIndex, block.endIndex, catalog)
         : [],
-      complete,
+      complete: block.closed,
     });
-    if (!complete) break;
-    searchFrom = end;
+    searchFrom = block.endIndex;
   }
 
   return blocks;
@@ -458,32 +444,29 @@ function findLegacyInvocationNames(
   start: number,
   end: number,
   catalog: ToolInvocationCatalog,
-  includeDoubleBarPrefix: boolean,
 ): string[] {
   const names: string[] = [];
-  // A corrupted double-bar block is extracted after its delimiter bytes are
-  // normalized, so its content yields BOTH single-bar invokes and invokes that
-  // kept the corrupted form; scan both prefixes inside the claimed range.
-  const invokePrefixes = includeDoubleBarPrefix
-    ? ['<｜DSML｜invoke name="', '<｜｜DSML｜invoke name="']
-    : ['<｜DSML｜invoke name="'];
-  for (const invokePrefix of invokePrefixes) {
-    let searchFrom = start;
+  let searchFrom = start;
 
-    while (searchFrom < end) {
-      const invokeIndex = text.indexOf(invokePrefix, searchFrom);
-      if (invokeIndex === -1 || invokeIndex >= end) break;
-
-      const nameStart = invokeIndex + invokePrefix.length;
-      const nameEnd = text.indexOf('"', nameStart);
-      if (nameEnd === -1 || nameEnd >= end) break;
-
-      const invocationName = text.slice(nameStart, nameEnd);
-      if (catalog.descriptorByInvocationName.has(invocationName)) {
-        names.push(invocationName);
-      }
-      searchFrom = nameEnd + 1;
+  while (searchFrom < end) {
+    // Generalized invoke scan: every delimiter shape, whitespace-tolerant
+    // attribute form; the name value runs to the next double quote. No
+    // payload parse — the >120K lightweight path keeps skipping extraction.
+    const tag = findDsmlTag(
+      text,
+      searchFrom,
+      (candidate) => !candidate.closing
+        && candidate.name === 'invoke'
+        && candidate.hasInvokeNameAttribute,
+    );
+    if (!tag || tag.index >= end) break;
+    const nameEnd = text.indexOf('"', tag.nameValueStart);
+    if (nameEnd === -1 || nameEnd > end) break;
+    const invocationName = text.slice(tag.nameValueStart, nameEnd);
+    if (catalog.descriptorByInvocationName.has(invocationName)) {
+      names.push(invocationName);
     }
+    searchFrom = Math.max(tag.endIndex, nameEnd + 1);
   }
 
   return names;

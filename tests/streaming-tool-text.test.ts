@@ -111,3 +111,51 @@ describe('createStreamingToolTextAccumulator corrupted double-bar blocks (P0.2)'
     expect(stream.flush()).toBe(text);
   });
 });
+
+describe('DSML total capture: live suppression of every variant (S3)', () => {
+  const descriptors = createMemoryToolDescriptors('en');
+
+  it('suppresses the exact pc live variant across chunk boundaries', () => {
+    const stream = createStreamingToolTextAccumulator(descriptors);
+    // bars doubled on BOTH sides, space before the name, `calls` wrapper.
+    expect(stream.append('Answer <｜｜DSML｜｜ c')).toBe('Answer ');
+    expect(stream.append('alls><｜｜DSML｜｜ invoke name="x">')).toBe('Answer ');
+    expect(stream.append('body</｜｜DSML｜｜ invoke></｜｜DSML｜｜ calls> done')).toBe('Answer  done');
+    expect(stream.flush()).toBe('Answer  done');
+  });
+
+  it('suppresses bar-grid and wrapperless variants', () => {
+    const grid = [
+      '<｜｜｜DSML｜｜｜ calls>',
+      '<｜｜｜DSML｜｜｜ invoke name="x">v</｜｜｜DSML｜｜｜ invoke>',
+      '</｜｜｜DSML｜｜｜ calls>',
+    ].join('');
+    const stream = createStreamingToolTextAccumulator(descriptors);
+    expect(stream.append(`pre ${grid} post`)).toBe('pre  post');
+
+    const bare = '<｜DSML｜invoke name="x">v</｜DSML｜invoke>';
+    const bareStream = createStreamingToolTextAccumulator(descriptors);
+    expect(bareStream.append(`a ${bare} b`)).toBe('a  b');
+  });
+
+  it('holds a partial generalized open across chunks, then suppresses', () => {
+    const stream = createStreamingToolTextAccumulator(descriptors);
+    expect(stream.append('lead <｜｜DSML｜｜ inv')).toBe('lead ');
+    expect(stream.append('oke name="x">v</｜｜DSML｜｜ invoke> tail')).toBe('lead  tail');
+  });
+
+  it('DROPS an unclosed generalized block at flush (never prose)', () => {
+    const stream = createStreamingToolTextAccumulator(descriptors);
+    expect(stream.append('visible <｜｜DSML｜｜ calls> swallowed')).toBe('visible ');
+    expect(stream.flush()).toBe('visible ');
+  });
+
+  it('9-bar and fused shapes stay prose (documented bound)', () => {
+    const bar = '｜';
+    const nine = `<${bar.repeat(9)}DSML${bar}calls>x</${bar.repeat(9)}DSML${bar}calls>`;
+    const stream = createStreamingToolTextAccumulator(descriptors);
+    expect(stream.append(`a ${nine} b`)).toBe(`a ${nine} b`);
+    const fused = createStreamingToolTextAccumulator(descriptors);
+    expect(fused.append('a <｜DSMLcalls> b')).toBe('a <｜DSMLcalls> b');
+  });
+});

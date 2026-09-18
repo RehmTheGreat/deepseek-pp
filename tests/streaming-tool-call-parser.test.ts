@@ -373,3 +373,37 @@ describe('createStreamingToolCallParser near-miss double-bar terminators (P0.2)'
     expect(result.failed).toHaveLength(0);
   });
 });
+
+describe('DSML total capture: generalized foreign terminators (S2)', () => {
+  const descriptors = createArtifactToolDescriptors('en');
+
+  it('bounds a mismatched-close XML call with a generalized </｜｜DSML｜｜ invoke> of ANY bar shape', () => {
+    for (const [k, m] of [[3, 1], [1, 2], [8, 8], [2, 2]] as const) {
+      const bar = '｜';
+      const terminator = `</${bar.repeat(k)}DSML${bar.repeat(m)}invoke>`;
+      const parser = createStreamingToolCallParser(descriptors);
+      parser.append('<artifact_create>{"filename":"a.txt"');
+      const event = parser.append(`,"content":"ok"}${terminator}<artifact_create>{"filename":"b.txt"}</artifact_create>`);
+      // The first call fails fast with the mismatched-close recovery; the
+      // following parallel call still parses.
+      expect(event.failed, `bars (${k},${m})`).toHaveLength(1);
+      expect(event.failed[0].parseError?.code).toBe('tool_call_close_mismatched');
+      // Canonical label in the message regardless of the closer's bar shape.
+      expect(event.failed[0].parseError?.message).toContain('</｜DSML｜invoke>');
+      // The following parallel call still parses to completion in the same
+      // event (the stray terminator is dropped, never re-parsed).
+      expect(event.completed).toHaveLength(1);
+      expect(event.completed[0]).toMatchObject({ invocationName: 'artifact_create' });
+    }
+  });
+
+  it('holds a DSML terminator split across chunks in the pending buffer', () => {
+    const parser = createStreamingToolCallParser(descriptors);
+    parser.append('<artifact_create>{"filename":"a.txt"');
+    const first = parser.append(',"content":"ok"}</｜｜DSML｜｜ inv');
+    expect(first.failed).toHaveLength(0);
+    const second = parser.append('oke><artifact_create>{"filename":"b.txt"}</artifact_create>');
+    expect(second.failed).toHaveLength(1);
+    expect(second.failed[0].parseError?.code).toBe('tool_call_close_mismatched');
+  });
+});

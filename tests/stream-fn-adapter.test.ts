@@ -635,3 +635,58 @@ describe('isDeepSeekInterruptedTurnError', () => {
     expect(isDeepSeekInterruptedTurnError('DeepSeek agent step timed out after retry.')).toBe(false);
   });
 });
+
+describe('createDeepSeekStreamFn DSML total capture (S7 fallback leg)', () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+    adapterMocks.createPowHeaders.mockResolvedValue({ 'X-DS-PoW-Response': 'pow-1' });
+  });
+
+  afterEach(() => {
+    vi.useRealTimers();
+  });
+
+  it('the flush fallback recovers the exact pc variant with its non-blocking annotation', async () => {
+    // bars doubled on BOTH sides, space before the tag name, `calls` wrapper:
+    // the streaming parser is XML-only, so this reply reaches the flush
+    // fallback, which must capture it (never prose) through the generalized
+    // legacy extraction.
+    const pcVariant = [
+      '<｜｜DSML｜｜ calls>',
+      '<｜｜DSML｜｜ invoke name="artifact_create">',
+      '<｜｜DSML｜｜ parameter name="filename" string="true">pc.txt</｜｜DSML｜｜ parameter>',
+      '</｜｜DSML｜｜ invoke>',
+      '</｜｜DSML｜｜ calls>',
+    ].join('');
+    adapterMocks.submitPromptStreaming.mockImplementationOnce(async (_input, handlers) => {
+      handlers.onTextChunk(pcVariant);
+      return turnResult();
+    });
+
+    const mappedCalls: Array<{ parseError?: { code: string } }> = [];
+    const deps = createDeps({
+      mapToolCall: (call, index) => {
+        mappedCalls.push(call);
+        return {
+          type: 'toolCall' as const,
+          id: `xml:${index}`,
+          name: call.invocationName,
+          arguments: call.payload,
+        };
+      },
+    });
+    const events = await collectEvents(deps);
+
+    expect(mappedCalls).toHaveLength(1);
+    expect(mappedCalls[0]).toMatchObject({ parseError: { code: 'tool_call_delimiter_corrected' } });
+    const done = events.at(-1);
+    expect(done?.type).toBe('done');
+    if (done?.type === 'done') {
+      expect(done.reason).toBe('toolUse');
+      const toolCalls = done.message.content.filter((block) => block.type === 'toolCall');
+      expect(toolCalls).toEqual([
+        { type: 'toolCall', id: 'xml:0', name: 'artifact_create', arguments: { filename: 'pc.txt' } },
+      ]);
+    }
+  });
+});

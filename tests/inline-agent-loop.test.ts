@@ -957,11 +957,11 @@ describe('runInlineAgentLoop recovered-call parseError feedback (P0.2 completion
     vi.useRealTimers();
   });
 
-  it('blocks a delimiter-corrected call and surfaces the parseError as the tool feedback', async () => {
+  it('EXECUTES a delimiter-corrected call (non-blocking annotation, pc directive 2)', async () => {
     vi.useFakeTimers();
     // Payload is schema-valid on purpose: schema validation failure would
     // otherwise preempt beforeToolCall with its own error. This isolates the
-    // parseError delivery contract under test.
+    // non-blocking annotation contract under test.
     const corruptedBlock = [
       '<｜｜DSML｜tool_calls>',
       '<｜｜DSML｜invoke name="artifact_create">',
@@ -976,7 +976,7 @@ describe('runInlineAgentLoop recovered-call parseError feedback (P0.2 completion
         return { assistantText: '', responseMessageId: 102, requestMessageId: 101, finished: true };
       })
       .mockImplementationOnce(async (_input, handlers) => {
-        handlers.onTextChunk('Understood, re-emitting with correct delimiters.');
+        handlers.onTextChunk('Executed with corrected delimiters.');
         return { assistantText: '', responseMessageId: 103, requestMessageId: 102, finished: true };
       });
 
@@ -994,22 +994,64 @@ describe('runInlineAgentLoop recovered-call parseError feedback (P0.2 completion
     await vi.advanceTimersByTimeAsync(7_000);
     await run;
 
-    // The recovered call never reaches execution...
-    expect(executeTool).not.toHaveBeenCalled();
-    // ...and the model sees the parseError feedback as the error tool result.
-    // AGENT_STEP_COMPLETE carries raw ToolExecutionRecords (ok/summary under
-    // `result`, like AGENTS.md's released record surface).
+    // pc directive 2 (2026-09-18): a malformed wrapper around intact invoke
+    // content EXECUTES — beforeToolCall does NOT block the corrected call.
+    expect(executeTool).toHaveBeenCalledTimes(1);
+    const correctedCall = (executeTool.mock.calls as unknown as Array<
+      [call: { name: string }]
+    >)[0]?.[0];
+    expect(correctedCall).toMatchObject({ name: 'artifact_create' });
     const stepComplete = post.mock.calls
       .map(([type, data]) => ({ type, data: data as { toolExecutions?: Array<{ name: string; result: { ok: boolean; summary: string } }> } }))
       .find(({ type, data }) => type === 'AGENT_STEP_COMPLETE' && (data.toolExecutions?.length ?? 0) > 0);
     expect(stepComplete).toBeDefined();
     expect(stepComplete?.data.toolExecutions?.[0]).toMatchObject({
       name: 'artifact_create',
-      result: {
-        ok: false,
-        summary: expect.stringContaining('tool_call_delimiter_corrected'),
-      },
+      result: { ok: true, summary: 'Artifact created' },
     });
-    expect(stepComplete?.data.toolExecutions?.[0]?.result.summary).toContain('｜｜DSML｜');
+  });
+
+  it('still BLOCKS a mismatched-close call with the structured [tool_call_close_mismatched] feedback', async () => {
+    vi.useFakeTimers();
+    // Canonical delimiters but an unterminated invoke: a content-level
+    // failure keeps the released blocking contract.
+    const mismatchedBlock = [
+      '<｜DSML｜tool_calls>',
+      '<｜DSML｜invoke name="artifact_create">',
+      '<｜DSML｜parameter name="filename" string="true">legacy.txt</｜DSML｜parameter>',
+      '<｜DSML｜parameter name="content" string="true">ok</｜DSML｜parameter>',
+      '</｜DSML｜tool_calls>',
+    ].join('');
+    adapterMocks.submitPromptStreaming
+      .mockImplementationOnce(async (_input, handlers) => {
+        handlers.onTextChunk(mismatchedBlock);
+        return { assistantText: '', responseMessageId: 102, requestMessageId: 101, finished: true };
+      })
+      .mockImplementationOnce(async (_input, handlers) => {
+        handlers.onTextChunk('Understood, closing the invoke properly.');
+        return { assistantText: '', responseMessageId: 103, requestMessageId: 102, finished: true };
+      });
+
+    const post = vi.fn();
+    const executeTool = vi.fn(async () => ({
+      name: 'artifact_create',
+      provider: { kind: 'local' as const, id: 'artifact', displayName: 'Artifact', transport: 'in_process' as const },
+      result: { ok: true, summary: 'Artifact created' },
+    }));
+
+    const run = runInlineAgentLoop(
+      { ...createPayload(), toolDescriptors: createArtifactToolDescriptors('en') },
+      { post, executeTool, signal: new AbortController().signal },
+    );
+    await vi.advanceTimersByTimeAsync(7_000);
+    await run;
+
+    expect(executeTool).not.toHaveBeenCalled();
+    const stepComplete = post.mock.calls
+      .map(([type, data]) => ({ type, data: data as { toolExecutions?: Array<{ name: string; result: { ok: boolean; summary: string } }> } }))
+      .find(({ type, data }) => type === 'AGENT_STEP_COMPLETE' && (data.toolExecutions?.length ?? 0) > 0);
+    expect(stepComplete).toBeDefined();
+    expect(stepComplete?.data.toolExecutions?.[0]?.result.ok).toBe(false);
+    expect(stepComplete?.data.toolExecutions?.[0]?.result.summary).toContain('tool_call_close_mismatched');
   });
 });

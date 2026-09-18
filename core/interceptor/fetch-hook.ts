@@ -38,6 +38,7 @@ import {
   type ResponseTokenSpeedPayload,
 } from "../deepseek/stream-metrics";
 import { createStreamingToolTextAccumulator } from "./streaming-tool-text";
+import { findDsmlTag, getDsmlShapeTailLength } from "./dsml-delimiters";
 import {
   createStreamingToolCallParser,
   type ToolCallPayloadChunk,
@@ -1123,6 +1124,13 @@ export class XmlToolStreamFilter {
   private visiblePrompt: string;
   private state: "NORMAL" | "SUPPRESSING" = "NORMAL";
   private currentTool: string | null = null;
+  /**
+   * DSML suppression target (pc directive 1: total capture): while set, the
+   * filter is suppressing a DSML block (`tool_calls`/`calls` wrapper or a
+   * wrapperless invoke) recognized in ANY delimiter shape by the shared
+   * generalized scanner. Mutually exclusive with `currentTool`.
+   */
+  private currentDsmlName: string | null = null;
   private pendingText = "";
   private pendingBlocks: Array<{
     block: string;
@@ -1198,7 +1206,10 @@ export class XmlToolStreamFilter {
       if (this.state === "SUPPRESSING") {
         const previousPendingLength = this.pendingText.length;
         const searchText = this.pendingText + text;
-        const closeTag = this.findFirstToolClose(searchText, this.currentTool!);
+        const closeTag = this.findFirstToolClose(searchText, 0, {
+          tool: this.currentTool,
+          dsmlName: this.currentDsmlName,
+        });
         if (closeTag) {
           const tailStart = closeTag.endIndex;
           const tailOffsetInCurrentText = tailStart - previousPendingLength;
@@ -1212,6 +1223,7 @@ export class XmlToolStreamFilter {
           this.state = "NORMAL";
           this.pendingText = "";
           this.currentTool = null;
+          this.currentDsmlName = null;
           if (toolTail) {
             this.processNormalTextBlock(
               controller,
@@ -1225,10 +1237,7 @@ export class XmlToolStreamFilter {
           }
           continue;
         }
-        this.pendingText = this.getCloseSearchTail(
-          searchText,
-          this.currentTool!,
-        );
+        this.pendingText = this.getCloseSearchTail(searchText);
         if (isFragmentCreation || isBatchPatch(effectiveParsed)) {
           const modified = cloneParsedWithTextPrefix(effectiveParsed, 0);
           if (modified) {
@@ -1308,11 +1317,10 @@ export class XmlToolStreamFilter {
 
     const found = this.findFirstToolOpen(this.pendingText);
     if (found) {
-      const closeTag = this.findFirstToolClose(
-        this.pendingText,
-        found.tool,
-        found.endIndex,
-      );
+      const closeTag = this.findFirstToolClose(this.pendingText, found.endIndex, {
+        tool: found.tool,
+        dsmlName: found.dsmlName,
+      });
       const tailStart = closeTag ? closeTag.endIndex : -1;
       const tailOffsetInCurrentText = tailStart - previousPendingLength;
 
@@ -1339,15 +1347,16 @@ export class XmlToolStreamFilter {
       if (!closeTag) {
         this.state = "SUPPRESSING";
         this.currentTool = found.tool;
+        this.currentDsmlName = found.dsmlName;
         this.pendingText = this.getCloseSearchTail(
           this.pendingText.slice(found.idx),
-          found.tool,
         );
         return;
       }
 
       this.state = "NORMAL";
       this.currentTool = null;
+      this.currentDsmlName = null;
       this.pendingText = "";
       const toolTail = this.getCurrentToolTail(
         parsed,
@@ -1453,17 +1462,75 @@ export class XmlToolStreamFilter {
     };
   }
 
-  private getCloseSearchTail(text: string, tool: string): string {
-    const tailLength = getPartialXmlToolTagTailLength(text, new Set([tool]), {
+  private getCloseSearchTail(text: string): string {
+    if (this.currentDsmlName) {
+      const tailLength = getDsmlShapeTailLength(text);
+      return tailLength > 0 ? text.slice(-tailLength) : "";
+    }
+    const tailLength = getPartialXmlToolTagTailLength(text, new Set([this.currentTool!]), {
       closing: true,
     });
     return tailLength > 0 ? text.slice(-tailLength) : "";
   }
 
   flush(controller: ReadableStreamDefaultController<Uint8Array>) {
+    // An unclosed DSML block must NEVER reach the page (pc directive 1):
+    // drop everything still pending instead of releasing it.
+    if (this.state === "SUPPRESSING" && this.currentDsmlName) {
+      this.pendingBlocks = [];
+      this.pendingText = "";
+      return;
+    }
+    // A partial DSML open held back in NORMAL state would release raw DSML
+    // bytes at EOS: emit the pending blocks with the partial-tag tail trimmed.
+    const dsmlTail = this.state === "NORMAL" ? getDsmlShapeTailLength(this.pendingText) : 0;
+    if (dsmlTail > 0) {
+      this.emitPendingBlocksTrimmingTail(controller, dsmlTail);
+      return;
+    }
     // Flush any unsent pending blocks (they were buffered as potential tool start but never confirmed)
     for (const b of this.pendingBlocks) {
       this.emitCollapsedTrailingNewlines(controller, b);
+    }
+    this.pendingBlocks = [];
+    this.pendingText = "";
+  }
+
+  /**
+   * Emits the pending blocks while dropping the trailing `tailLength` text
+   * characters (a partial DSML tag shape that can never complete at EOS).
+   * Blocks fully inside the tail region are dropped; the straddling block
+   * keeps its prefix.
+   */
+  private emitPendingBlocksTrimmingTail(
+    controller: ReadableStreamDefaultController<Uint8Array>,
+    tailLength: number,
+  ) {
+    let textSeen = 0;
+    const tailStart = this.pendingText.length - tailLength;
+    for (const entry of this.pendingBlocks) {
+      const text = extractResponseTextFromParsed(entry.parsed);
+      if (text === null) {
+        this.emitCollapsedTrailingNewlines(controller, entry);
+        continue;
+      }
+      const entryStart = textSeen;
+      const entryEnd = textSeen + text.length;
+      textSeen = entryEnd;
+      if (entryEnd <= tailStart) {
+        this.emitCollapsedTrailingNewlines(controller, entry);
+        continue;
+      }
+      const keepChars = Math.max(0, tailStart - entryStart);
+      if (keepChars === 0) continue; // fully inside the partial-tag tail
+      const modified = cloneParsedWithTextPrefix(entry.parsed, keepChars);
+      if (modified) {
+        this.emit(
+          controller,
+          replaceDeepSeekSseFrameData(entry.sourceFrame, JSON.stringify(modified)),
+          entry.separator,
+        );
+      }
     }
     this.pendingBlocks = [];
     this.pendingText = "";
@@ -1481,21 +1548,41 @@ export class XmlToolStreamFilter {
 
   private findFirstToolOpen(
     text: string,
-  ): { idx: number; endIndex: number; tool: string } | null {
+  ): { idx: number; endIndex: number; tool: string | null; dsmlName: string | null } | null {
     const match = findFirstXmlToolTag(text, this.toolInvocationNameSet, {
       closing: false,
     });
-    return match
-      ? { idx: match.index, endIndex: match.endIndex, tool: match.name }
-      : null;
+    const dsml = findDsmlTag(
+      text,
+      0,
+      (tag) => !tag.closing
+        && (tag.name === "tool_calls" || tag.name === "calls" || tag.name === "invoke"),
+    );
+    if (match && (!dsml || match.index <= dsml.index)) {
+      return { idx: match.index, endIndex: match.endIndex, tool: match.name, dsmlName: null };
+    }
+    if (dsml) {
+      return { idx: dsml.index, endIndex: dsml.endIndex, tool: null, dsmlName: dsml.name };
+    }
+    return null;
   }
 
   private findFirstToolClose(
     text: string,
-    tool: string,
-    fromIndex = 0,
+    fromIndex: number,
+    target: { tool: string | null; dsmlName: string | null },
   ): { index: number; endIndex: number } | null {
-    const match = findFirstXmlToolTag(text, new Set([tool]), {
+    // DSML target: the first closing tag of the SAME name in ANY bar shape
+    // (shared generalized scanner). XML target: the exact catalog close tag.
+    if (target.dsmlName) {
+      const close = findDsmlTag(
+        text,
+        fromIndex,
+        (tag) => tag.closing && tag.name === target.dsmlName,
+      );
+      return close ? { index: close.index, endIndex: close.endIndex } : null;
+    }
+    const match = findFirstXmlToolTag(text, new Set([target.tool!]), {
       closing: true,
       fromIndex,
     });
@@ -1507,6 +1594,7 @@ export class XmlToolStreamFilter {
       getPartialXmlToolTagTailLength(text, this.toolInvocationNameSet, {
         closing: false,
       }) > 0
+      || getDsmlShapeTailLength(text) > 0
     );
   }
 

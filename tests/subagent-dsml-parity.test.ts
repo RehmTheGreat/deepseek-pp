@@ -243,3 +243,66 @@ describe('R9: child runs parse DSML and XML tool calls identically', () => {
     expect(calls[1][0].parentMessageId).toBe(100);
   });
 });
+
+describe('R9 parity on the widened DSML surface: the pc live variant executes identically', () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+    adapterMocks.createPowHeaders.mockResolvedValue({ 'X-DS-PoW-Response': 'pow-1' });
+  });
+
+  afterEach(() => {
+    vi.useRealTimers();
+  });
+
+  it('a pc-variant DSML call in a child run executes with the same record shape as the XML form', async () => {
+    vi.useFakeTimers();
+    const { runner, store, executeTool } = createHarness();
+
+    const PC_VARIANT = [
+      '<｜｜DSML｜｜ calls>',
+      '<｜｜DSML｜｜ invoke name="artifact_create">',
+      '<｜｜DSML｜｜ parameter name="filename" string="true">a.txt</｜｜DSML｜｜ parameter>',
+      '<｜｜DSML｜｜ parameter name="content" string="true">ok</｜｜DSML｜｜ parameter>',
+      '</｜｜DSML｜｜ invoke>',
+      '</｜｜DSML｜｜ calls>',
+    ].join('');
+
+    adapterMocks.submitPromptStreaming
+      .mockImplementationOnce(async (_input: unknown, handlers: { onTextChunk: (t: string) => void }) => {
+        handlers.onTextChunk(PC_VARIANT);
+        return { assistantText: '', responseMessageId: 302, requestMessageId: 301, finished: true };
+      })
+      .mockImplementationOnce(async (_input: unknown, handlers: { onTextChunk: (t: string) => void }) => {
+        handlers.onTextChunk('pc-variant child done.');
+        return { assistantText: '', responseMessageId: 304, requestMessageId: 303, finished: true };
+      });
+
+    const run = runner.spawn({ payload: { task: 'pc variant child' }, chainParentMessageId: 100 });
+    await vi.advanceTimersByTimeAsync(7_000);
+    const result = outcomeOf(await run);
+
+    // Directive 2: the delimiter annotation is non-blocking — the child
+    // executed the call and completed with a real deliverable.
+    expect(executeTool).toHaveBeenCalledTimes(1);
+    const correctedCall = (executeTool.mock.calls as unknown as Array<
+      [call: { name: string }]
+    >)[0]?.[0];
+    expect(correctedCall).toMatchObject({ name: 'artifact_create' });
+    expect(result).toMatchObject({
+      ok: true,
+      refused: false,
+      status: 'complete',
+      finalText: 'pc-variant child done.',
+      totalTools: 1,
+    });
+
+    const rows = await store.read();
+    const row = rows.find((entry) => entry.loopId === result.childLoopId);
+    const executions = row?.steps.flatMap((step) => step.toolExecutions) ?? [];
+    expect(executions).toHaveLength(1);
+    expect(executions[0]).toMatchObject({
+      name: 'artifact_create',
+      result: { ok: true, summary: 'Artifact created' },
+    });
+  });
+});

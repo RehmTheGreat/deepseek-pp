@@ -1,6 +1,6 @@
 import { DEFAULT_LOCALE, translate, type SupportedLocale } from '../i18n/background';
 import { appendToolCallHistory } from './history';
-import { ToolPostEffectPersistenceError } from './execution-error';
+import { ToolPostEffectPersistenceError, TOOL_CALL_DELIMITER_CORRECTED_ERROR_CODE } from './execution-error';
 import type {
   RuntimeToolAuthorizationContext,
   ToolCall,
@@ -147,7 +147,14 @@ async function executeRuntimeToolCall(
     source: 'tool-runtime',
     message: `tool start: ${identifiedCall.name}`,
   });
-  if (identifiedCall.parseError) {
+  if (
+    identifiedCall.parseError
+    // pc directive 2 (2026-09-18): `tool_call_delimiter_corrected` is a
+    // NON-BLOCKING annotation — a malformed wrapper around intact invoke
+    // content EXECUTES. Every other parseError keeps failing closed here
+    // with the structured model-visible error.
+    && identifiedCall.parseError.code !== TOOL_CALL_DELIMITER_CORRECTED_ERROR_CODE
+  ) {
     const result = createParseErrorToolResult(identifiedCall, locale);
     await appendAuthorizedFailureHistory(identifiedCall, result, context);
     return result;
@@ -192,7 +199,15 @@ async function executeRuntimeToolCall(
       authorized.externalPayloadNamespace,
     );
     assertRuntimeExecutionActive(options);
-    if (resolvedCall.parseError) {
+    // Gate 2 re-checks the carried parseError after payload resolution. The
+    // non-blocking delimiter annotation survives resolution on the record, so
+    // it needs the same exemption as gate 1; resolution-produced errors
+    // (external payload missing/invalid) are different codes and stay
+    // blocking.
+    if (
+      resolvedCall.parseError
+      && resolvedCall.parseError.code !== TOOL_CALL_DELIMITER_CORRECTED_ERROR_CODE
+    ) {
       result = createParseErrorToolResult(resolvedCall, locale);
     } else if (capabilityInvocationResolver?.supports(executionDescriptor)) {
       const resolution = await capabilityInvocationResolver.resolveInvocation({

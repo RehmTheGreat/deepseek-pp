@@ -254,3 +254,58 @@ function readVisibleText(output: string): string {
     .filter((text): text is string => text !== null)
     .join('');
 }
+
+describe('XmlToolStreamFilter DSML total capture (S4, pc directives 2026-09-18)', () => {
+  it('never renders the exact pc variant: frames with the block emit only the surrounding prose', () => {
+    const output = runFilter([
+      sseText('Checking. '),
+      sseText('<｜｜DSML｜｜ calls>'),
+      sseText('<｜｜DSML｜｜ invoke name="artifact_create">'),
+      sseText('<｜｜DSML｜｜ parameter name="filename" string="true">a.txt</｜｜DSML｜｜ parameter>'),
+      sseText('</｜｜DSML｜｜ invoke></｜｜DSML｜｜ calls>'),
+      sseText(' done'),
+    ]);
+
+    expect(output).not.toContain('DSML');
+    expect(output).not.toContain('a.txt');
+    expect(readVisibleText(output)).toBe('Checking.  done');
+  });
+
+  it('holds a partial DSML open across frames instead of emitting raw bytes', () => {
+    const output = runFilter([
+      sseText('intro <｜｜DSML｜｜ inv'),
+      sseText('oke name="artifact_create">x</｜｜DSML｜｜ invoke> outro'),
+    ]);
+
+    expect(output).not.toContain('DSML');
+    expect(readVisibleText(output)).toBe('intro  outro');
+  });
+
+  it('DROPS an unclosed DSML block and its partial-open tail at flush (never prose)', () => {
+    const output = runFilter([
+      sseText('kept <｜｜DSML｜｜ calls> swallowed'),
+      sseText(' more swallowed <｜｜DSML｜｜ inv'),
+    ]);
+
+    expect(output).not.toContain('DSML');
+    expect(output).not.toContain('swallowed');
+    expect(readVisibleText(output)).toBe('kept ');
+  });
+
+  it('suppresses `calls`-wrapper, bar-grid, and wrapperless variants on the page', () => {
+    const bar = '｜';
+    const grid = [
+      `<${bar.repeat(3)}DSML${bar.repeat(2)}calls>`,
+      `<${bar.repeat(3)}DSML${bar.repeat(2)}invoke name="artifact_create">v</${bar.repeat(3)}DSML${bar.repeat(2)}invoke>`,
+      `</${bar.repeat(3)}DSML${bar.repeat(2)}calls>`,
+    ].join('');
+    const gridOutput = runFilter([sseText(`pre ${grid} post`)]);
+    expect(gridOutput).not.toContain('DSML');
+    expect(readVisibleText(gridOutput)).toBe('pre  post');
+
+    const bare = '<｜DSML｜invoke name="artifact_create">v</｜DSML｜invoke>';
+    const bareOutput = runFilter([sseText(`a ${bare} b`)]);
+    expect(bareOutput).not.toContain('DSML');
+    expect(readVisibleText(bareOutput)).toBe('a  b');
+  });
+});

@@ -37,6 +37,7 @@ import type {
 import { runAgentLoop } from '@earendil-works/pi-agent-core';
 import { compactInlineAgentContext, inlineAgentConvertToLlm, type InlineAgentCompactionSummarizer } from './compaction';
 import { DEFAULT_LOCALE, translate, type SupportedLocale } from '../../i18n';
+import { TOOL_CALL_DELIMITER_CORRECTED_ERROR_CODE } from '../../tool/execution-error';
 import type { ToolCall, ToolDescriptor, ToolError, ToolExecutionRecord, ToolProviderIdentity } from '../../types';
 import { createClientHeaders } from '../../deepseek/adapter';
 import { getDeepSeekApiKey } from '../../chat/api-key';
@@ -610,11 +611,15 @@ export async function runPiInlineAgentLoop(deps: PiLoopAdapterDeps): Promise<voi
         return { block: true, reason: chainErrorText(nudge.currentTurnIsNudge) };
       }
       // P0.2 completion: a recovered parseError on the emitted block
-      // (delimiter correction, mismatched close, incomplete) must reach the
+      // (mismatched close, incomplete, invalid payload) must reach the
       // model's feedback loop exactly like the batch path — the call never
       // executes and the reason becomes the error tool result.
+      // EXCEPTION (pc directive 2, 2026-09-18):
+      // `tool_call_delimiter_corrected` is a NON-BLOCKING annotation — a
+      // malformed wrapper around intact invoke content EXECUTES; the
+      // annotation stays on the record for trace visibility only.
       const parseError = (toolCall as { parseError?: ToolError }).parseError;
-      if (parseError) {
+      if (parseError && parseError.code !== TOOL_CALL_DELIMITER_CORRECTED_ERROR_CODE) {
         return {
           block: true,
           reason: `${translate(locale, 'tool.runtime.invalidFormat')} [${parseError.code}] ${parseError.message}`,

@@ -106,14 +106,17 @@ describe('DSML near-miss double-bar delimiter policy (P0.2)', () => {
     expect(stripToolCalls(unterminated, { descriptors })).toBe('');
   });
 
-  it('suppresses the raw bytes from display strip and renders them as malformed in the summary', () => {
+  it('suppresses the raw bytes from display strip and renders the corrected call as EXECUTED in the summary', () => {
     const text = `Before ${corruptedBlock} after`;
 
     expect(stripToolCalls(text, { descriptors })).toBe('Before  after');
 
+    // pc directive 2 (2026-09-18): `tool_call_delimiter_corrected` is a
+    // NON-BLOCKING annotation — the recovered call executes, so the summary
+    // counts it as called (格式错误 is reserved for blocking codes only).
     const summary = replaceToolCallsWithSummary(text, { descriptors });
-    expect(summary).toContain('已调用工具');
-    expect(summary).toContain('格式错误');
+    expect(summary).toContain('已调用工具（1次）');
+    expect(summary).not.toContain('格式错误');
     expect(summary).not.toContain('｜｜DSML｜');
     expect(summary).not.toContain('a.txt');
   });

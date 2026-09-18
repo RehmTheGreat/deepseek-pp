@@ -356,3 +356,86 @@ describe('near-miss double-bar delimiter recovery (P0.2, StreamFn fallback scopi
       .toHaveLength(1);
   });
 });
+
+describe('DSML total capture: recovery extensions (pc directives 2026-09-18)', () => {
+  const descriptors = createArtifactToolDescriptors('en');
+  const F_PC = [
+    '<｜｜DSML｜｜ calls>',
+    '<｜｜DSML｜｜ invoke name="artifact_create">',
+    '<｜｜DSML｜｜ parameter name="filename" string="true">a.txt</｜｜DSML｜｜ parameter>',
+    '<｜｜DSML｜｜ parameter name="content" string="true">ok</｜｜DSML｜｜ parameter>',
+    '</｜｜DSML｜｜ invoke>',
+    '</｜｜DSML｜｜ calls>',
+  ].join('');
+
+  it('claims a wrapperless bare invoke block and extracts its call', () => {
+    const bare = [
+      '<｜DSML｜invoke name="artifact_create">',
+      '<｜DSML｜parameter name="filename" string="true">a.txt</｜DSML｜parameter>',
+      '</｜DSML｜invoke>',
+    ].join('');
+    const calls = extractToolCalls(`lead ${bare} tail`, { descriptors });
+    expect(calls).toHaveLength(1);
+    expect(calls[0]).toMatchObject({ invocationName: 'artifact_create', payload: { filename: 'a.txt' } });
+    expect(calls[0].parseError).toBeUndefined();
+  });
+
+  it('strips an unclosed generalized opener to EOF on the display leg', () => {
+    const text = `keep <｜｜DSML｜｜ calls> swallow ${'x'.repeat(50)}`;
+    expect(stripToolCalls(text, { descriptors })).toBe('keep');
+  });
+
+  it('F-CONTENT-BROKEN keeps the exact structured codes (never prose)', () => {
+    // Unknown invocation name inside a recognized generalized block.
+    const unknown = [
+      '<｜｜DSML｜｜ calls>',
+      '<｜｜DSML｜｜ invoke name="not_a_real_tool">',
+      '</｜｜DSML｜｜ invoke>',
+      '</｜｜DSML｜｜ calls>',
+    ].join('');
+    const unknownCalls = extractToolCalls(unknown, { descriptors });
+    expect(unknownCalls).toHaveLength(1);
+    expect(unknownCalls[0].invocationName).toBe('not_a_real_tool');
+    expect(stripToolCalls(unknown, { descriptors })).toBe('');
+
+    // Unterminated invoke inside a closed generalized block.
+    const unterminated = [
+      '<｜｜DSML｜｜ calls>',
+      '<｜｜DSML｜｜ invoke name="artifact_create">',
+      '<｜｜DSML｜｜ parameter name="filename" string="true">a.txt</｜｜DSML｜｜ parameter>',
+      '</｜｜DSML｜｜ calls>',
+    ].join('');
+    const [call] = extractToolCalls(unterminated, { descriptors });
+    expect(call.parseError?.code).toBe(MISMATCHED_TOOL_CALL_ERROR_CODE);
+  });
+
+  it('claims a wrapper block ONCE: no duplicate records for its inner invokes (C1 precedence)', () => {
+    const nested = [
+      '<｜｜DSML｜｜ calls>',
+      '<｜｜DSML｜｜ invoke name="artifact_create">',
+      '<｜｜DSML｜｜ parameter name="filename" string="true">one</｜｜DSML｜｜ parameter>',
+      '</｜｜DSML｜｜ invoke>',
+      '<｜｜DSML｜｜ invoke name="artifact_create">',
+      '<｜｜DSML｜｜ parameter name="filename" string="true">two</｜｜DSML｜｜ parameter>',
+      '</｜｜DSML｜｜ invoke>',
+      '</｜｜DSML｜｜ calls>',
+    ].join('');
+    const calls = extractToolCalls(nested, { descriptors });
+    expect(calls).toHaveLength(2);
+    expect(calls.map((call) => call.payload)).toEqual([
+      { filename: 'one' },
+      { filename: 'two' },
+    ]);
+    expect(calls.every((call) => call.parseError?.code === TOOL_CALL_DELIMITER_CORRECTED_ERROR_CODE)).toBe(true);
+  });
+
+  it('the exact pc live variant extracts through the legacy machinery with the corrected annotation', () => {
+    const calls = extractToolCalls(`I'll check. ${F_PC} ok`, { descriptors });
+    expect(calls).toHaveLength(1);
+    expect(calls[0]).toMatchObject({
+      invocationName: 'artifact_create',
+      payload: { filename: 'a.txt', content: 'ok' },
+      parseError: { code: TOOL_CALL_DELIMITER_CORRECTED_ERROR_CODE },
+    });
+  });
+});

@@ -649,3 +649,74 @@ describe('history cleanup', () => {
     expect(records[0].calls[0].payload).toEqual({});
   });
 });
+
+describe('history cleanup: DSML total capture (S6, pc directives 2026-09-18)', () => {
+  const toolDescriptors = createArtifactToolDescriptors('en');
+  const F_PC = [
+    '<｜｜DSML｜｜ calls>',
+    '<｜｜DSML｜｜ invoke name="artifact_create">',
+    '<｜｜DSML｜｜ parameter name="filename" string="true">a.txt</｜｜DSML｜｜ parameter>',
+    '</｜｜DSML｜｜ invoke>',
+    '</｜｜DSML｜｜ calls>',
+  ].join('');
+
+  function historyWith(content: string): any {
+    return {
+      data: {
+        biz_data: {
+          chat_messages: [{
+            message_id: 1,
+            message_role: 'assistant',
+            content,
+          }],
+        },
+      },
+    };
+  }
+
+  it('strips the pc variant and restores the recovered call with normalized raw', () => {
+    const records: any[] = [];
+    const json = historyWith(`Saved. ${F_PC}`);
+    stripToolCallsFromHistory(json, { toolDescriptors, onToolCallsRestored: (r) => records.push(...r) });
+
+    expect(json.data.biz_data.chat_messages[0].content).toBe('Saved.');
+    expect(records).toHaveLength(1);
+    expect(records[0].calls).toHaveLength(1);
+    expect(records[0].calls[0]).toMatchObject({
+      name: 'artifact_create',
+      parseError: { code: 'tool_call_delimiter_corrected' },
+    });
+    // raw is normalized-canonical: the corrupted bytes never enter restore records.
+    expect(records[0].calls[0].raw).not.toContain('｜｜DSML｜');
+  });
+
+  it('strips `calls`-wrapper and wrapperless bare-invoke blocks', () => {
+    const bare = '<｜DSML｜invoke name="artifact_create">v</｜DSML｜invoke>';
+    const records: any[] = [];
+    const json = historyWith(`a ${bare} b`);
+    stripToolCallsFromHistory(json, { toolDescriptors, onToolCallsRestored: (r) => records.push(...r) });
+    expect(json.data.biz_data.chat_messages[0].content).toBe('a  b');
+    expect(records[0].calls[0]).toMatchObject({ name: 'artifact_create' });
+  });
+
+  it('strips a 130K generalized block without parsing its payload (lightweight path)', () => {
+    const huge = [
+      '<｜｜DSML｜｜ calls>',
+      `<｜｜DSML｜｜ invoke name="artifact_create"><｜｜DSML｜｜ parameter name="content" string="true">${'z'.repeat(130_000)}`,
+      '</｜｜DSML｜｜ parameter></｜｜DSML｜｜ invoke></｜｜DSML｜｜ calls>',
+    ].join('');
+    const records: any[] = [];
+    const json = historyWith(`lead ${huge}`);
+    stripToolCallsFromHistory(json, { toolDescriptors, onToolCallsRestored: (r) => records.push(...r) });
+    expect(json.data.biz_data.chat_messages[0].content).toBe('lead');
+    // Lightweight restore: name-only record, omitted payload raw.
+    expect(records[0].calls[0].raw).toBe('<artifact_create>\n...[restore payload omitted]\n</artifact_create>');
+  });
+
+  it('strips an unclosed generalized opener to EOF', () => {
+    const records: any[] = [];
+    const json = historyWith('keep <｜｜DSML｜｜ calls> swallowed');
+    stripToolCallsFromHistory(json, { toolDescriptors, onToolCallsRestored: (r) => records.push(...r) });
+    expect(json.data.biz_data.chat_messages[0].content).toBe('keep');
+  });
+});

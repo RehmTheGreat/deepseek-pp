@@ -78,3 +78,49 @@ describe('H1 ReDoS regression', () => {
     expect(performance.now() - t0).toBeLessThan(2000);
   });
 });
+
+describe('DSML total capture: adversarial timing (pc directives 2026-09-18)', () => {
+  const descriptors = createArtifactToolDescriptors('en');
+  const bar = '｜';
+  it('pc-variant block embedded in 120K text parses well under the bound', () => {
+    const block = [
+      `<${bar.repeat(2)}DSML${bar.repeat(2)} calls>`,
+      `<${bar.repeat(2)}DSML${bar.repeat(2)} invoke name="artifact_create">`,
+      `<${bar.repeat(2)}DSML${bar.repeat(2)} parameter name="filename" string="true">a.txt</${bar.repeat(2)}DSML${bar.repeat(2)} parameter>`,
+      `</${bar.repeat(2)}DSML${bar.repeat(2)} invoke>`,
+      `</${bar.repeat(2)}DSML${bar.repeat(2)} calls>`,
+    ].join('');
+    const input = 'x'.repeat(60_000) + block + 'y'.repeat(59_000);
+    const t0 = performance.now();
+    const calls = extractToolCalls(input, { descriptors });
+    expect(calls).toHaveLength(1);
+    expect(performance.now() - t0).toBeLessThan(2000);
+  });
+  it('120K of 8-bar DSML runs without tag names stays linear', () => {
+    const unit = `<${bar.repeat(8)}DSML${bar.repeat(8)}`;
+    const input = unit.repeat(Math.ceil(120_000 / unit.length));
+    const t0 = performance.now();
+    expect(extractToolCalls(input, { descriptors })).toHaveLength(0);
+    expect(performance.now() - t0).toBeLessThan(2000);
+  });
+  it('unclosed generalized opener plus 120K whitespace stays linear', () => {
+    const input = `<${bar.repeat(3)}DSML${bar}calls>` + ' '.repeat(119_000);
+    const t0 = performance.now();
+    expect(extractToolCalls(input, { descriptors })).toHaveLength(0);
+    expect(performance.now() - t0).toBeLessThan(2000);
+  });
+  it('normalize+claim scales linearly: 120K of adversarial bar runs is about twice 60K', async () => {
+    const unit = `<${bar.repeat(8)}DSML${bar.repeat(8)}DSML${bar.repeat(8)}`;
+    const { normalizeDsmlDelimiters, findNextDsmlToolBlock } = await import('../core/interceptor/dsml-delimiters');
+    const run = (size: number): number => {
+      const input = unit.repeat(Math.ceil(size / unit.length));
+      const t0 = performance.now();
+      normalizeDsmlDelimiters(input);
+      findNextDsmlToolBlock(input, 0);
+      return performance.now() - t0;
+    };
+    const small = run(60_000);
+    const large = run(120_000);
+    expect(large).toBeLessThan(Math.max(2000, small * 6));
+  });
+});

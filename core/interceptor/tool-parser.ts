@@ -6,6 +6,7 @@ import {
   type ToolInvocationCatalog,
   type ToolParsingInput,
 } from '../tool';
+import { findDsmlTag, findNextDsmlToolBlock, normalizeDsmlDelimiters } from './dsml-delimiters';
 import { MISMATCHED_TOOL_CALL_ERROR_CODE, TOOL_CALL_DELIMITER_CORRECTED_ERROR_CODE } from '../tool/execution-error';
 import { findFirstXmlToolTag, type XmlToolTagMatch } from '../tool/xml-tags';
 
@@ -19,18 +20,6 @@ const LEGACY_PARAMETER_TYPE_PREFIX = '" string="';
 const LEGACY_PARAMETER_CLOSE_TAG = '</｜DSML｜parameter>';
 // Foreign close emitted by models trained on a generic `<invoke>` wire format.
 const PLAIN_INVOKE_CLOSE_TAG = '</invoke>';
-
-// Near-miss delimiter policy (P0.2): models imitating DeepSeek native protocol
-// tokens sometimes emit the legacy DSML tags with a DOUBLED fullwidth bar. Only
-// these exact corrupted tag literals are recognized — never a bare `｜DSML｜`
-// substring, and never arbitrary unknown delimiters. A recognized block's
-// delimiter bytes are normalized onto the single-bar forms and re-extracted
-// through the SAME legacy machinery below (no second extraction algorithm).
-export const DOUBLE_BAR_TOOL_CALLS_OPEN_TAG = '<｜｜DSML｜tool_calls>';
-export const DOUBLE_BAR_TOOL_CALLS_CLOSE_TAG = '</｜｜DSML｜tool_calls>';
-const DOUBLE_BAR_INVOKE_CLOSE_TAG = '</｜｜DSML｜invoke>';
-const DOUBLE_BAR_DELIMITER_OPEN_PREFIX = '<｜｜DSML｜';
-const DOUBLE_BAR_DELIMITER_CLOSE_PREFIX = '</｜｜DSML｜';
 
 export function extractToolCalls(text: string, input?: ToolParsingInput): ToolCall[] {
   const catalog = createToolInvocationCatalog(input?.descriptors);
@@ -174,21 +163,12 @@ function findXmlToolCallTerminator(
       closing: true,
     });
   }
-  const legacyCloseIdx = text.indexOf(LEGACY_INVOKE_CLOSE_TAG, fromIndex);
-  if (legacyCloseIdx !== -1) {
+  const legacyClose = findDsmlTag(text, fromIndex, (tag) => tag.closing && tag.name === 'invoke');
+  if (legacyClose) {
     consider({
-      index: legacyCloseIdx,
-      endIndex: legacyCloseIdx + LEGACY_INVOKE_CLOSE_TAG.length,
+      index: legacyClose.index,
+      endIndex: legacyClose.endIndex,
       label: LEGACY_INVOKE_CLOSE_TAG,
-      closing: true,
-    });
-  }
-  const doubleBarCloseIdx = text.indexOf(DOUBLE_BAR_INVOKE_CLOSE_TAG, fromIndex);
-  if (doubleBarCloseIdx !== -1) {
-    consider({
-      index: doubleBarCloseIdx,
-      endIndex: doubleBarCloseIdx + DOUBLE_BAR_INVOKE_CLOSE_TAG.length,
-      label: DOUBLE_BAR_INVOKE_CLOSE_TAG,
       closing: true,
     });
   }
@@ -277,45 +257,42 @@ interface LegacyToolCallsBlockRange {
   openIndex: number;
   /** Exclusive end of the block (past its closing tag). */
   endIndex: number;
-  /** The opener used the corrupted double-bar delimiter form. */
+  /** Non-canonical delimiter shape (any bar count/name/whitespace variance). */
   corrupted: boolean;
 }
 
 /**
- * Earliest `｜DSML｜tool_calls` block opener from `fromIndex`, single-bar or
- * corrupted double-bar, each matched with its own exact closing tag. An
- * unclosed opener stays unclaimed (the legacy skip, mirrored for both forms).
+ * Earliest DSML tool block from `fromIndex` via the shared generalized
+ * scanner (`findNextDsmlToolBlock`, core/interceptor/dsml-delimiters.ts):
+ * both wrapper names (`tool_calls`/`calls`), wrapperless invoke blocks, any
+ * bar shape 1..8 on either side, tolerated whitespace inside tags, closers
+ * of ANY bar shape, unclosed openers claiming to EOF. Extraction and the
+ * display strip consume the SAME claim rule (strip symmetry).
  */
 function findNextLegacyToolCallsBlock(
   text: string,
   fromIndex: number,
 ): LegacyToolCallsBlockRange | null {
-  const singleOpenIdx = text.indexOf(LEGACY_TOOL_CALLS_OPEN_TAG, fromIndex);
-  const doubleOpenIdx = text.indexOf(DOUBLE_BAR_TOOL_CALLS_OPEN_TAG, fromIndex);
-  const corrupted = doubleOpenIdx !== -1 && (singleOpenIdx === -1 || doubleOpenIdx < singleOpenIdx);
-  const openTag = corrupted ? DOUBLE_BAR_TOOL_CALLS_OPEN_TAG : LEGACY_TOOL_CALLS_OPEN_TAG;
-  const openIndex = corrupted ? doubleOpenIdx : singleOpenIdx;
-  if (openIndex === -1) return null;
-  const closeTag = corrupted ? DOUBLE_BAR_TOOL_CALLS_CLOSE_TAG : LEGACY_TOOL_CALLS_CLOSE_TAG;
-  const closeIdx = text.indexOf(closeTag, openIndex + openTag.length);
-  if (closeIdx === -1) return null;
-  return { openIndex, endIndex: closeIdx + closeTag.length, corrupted };
+  const block = findNextDsmlToolBlock(text, fromIndex);
+  if (!block) return null;
+  return { openIndex: block.openIndex, endIndex: block.endIndex, corrupted: !block.canonical };
 }
 
 /**
- * Extracts the invokes of a corrupted double-bar block after normalizing its
- * delimiter bytes onto the single-bar forms — the SAME legacy machinery, not a
- * second algorithm. Successfully recovered calls carry
- * `tool_call_delimiter_corrected` so the parseError feedback loop informs the
- * model its delimiters were corrected; a call whose inner extraction already
- * failed keeps its own recovery code (mismatched-close semantics) — the
- * correction never masks a real failure and vice versa.
+ * Extracts the invokes of a non-canonical DSML block after normalizing its
+ * delimiter bytes onto the single-bar forms — the SAME legacy machinery, not
+ * a second algorithm. Successfully recovered calls carry
+ * `tool_call_delimiter_corrected` as a NON-BLOCKING annotation (pc directive
+ * 2: a malformed wrapper around an intact invoke EXECUTES); a call whose
+ * inner extraction already failed keeps its own recovery code (mismatched
+ * close semantics) — the correction never masks a real failure and vice
+ * versa.
  */
 function extractCorrectedLegacyInvokes(
   blockContent: string,
   catalog: ToolInvocationCatalog,
 ): ToolCall[] {
-  const normalized = normalizeCorruptedDelimiterBytes(blockContent);
+  const normalized = normalizeDsmlDelimiters(blockContent);
   const calls: ToolCall[] = [];
   extractLegacyInvokes(normalized, catalog, calls);
   return calls.map((call) => call.parseError ? call : {
@@ -327,19 +304,6 @@ function extractCorrectedLegacyInvokes(
         + 'after normalizing them to the ｜DSML｜ format.',
     ),
   });
-}
-
-/**
- * Normalizes ONLY the corrupted `<｜｜DSML｜` / `</｜｜DSML｜` tag prefixes
- * (the invocation-shaped structure). Bare `｜｜DSML｜` bytes inside prose or
- * parameter values are left untouched.
- */
-function normalizeCorruptedDelimiterBytes(blockContent: string): string {
-  return blockContent
-    .split(DOUBLE_BAR_DELIMITER_CLOSE_PREFIX)
-    .join('</｜DSML｜')
-    .split(DOUBLE_BAR_DELIMITER_OPEN_PREFIX)
-    .join('<｜DSML｜');
 }
 
 function extractLegacyInvokes(
@@ -580,13 +544,18 @@ export function replaceToolCallsWithSummary(text: string, input?: ToolParsingInp
 function replaceMatchWithSummary(match: string, catalog: ToolInvocationCatalog): string {
   const calls = extractToolCalls(match, { descriptors: catalog.descriptors });
   if (calls.length === 0) return '';
+  // `tool_call_delimiter_corrected` is a NON-BLOCKING annotation: the call
+  // executes, so it renders as an executed line and counts as executed in
+  // the header. Only blocking codes render 格式错误.
+  const isBlocking = (call: ToolCall) =>
+    Boolean(call.parseError) && call.parseError!.code !== TOOL_CALL_DELIMITER_CORRECTED_ERROR_CODE;
   const lines = calls.map(call => {
     const name = call.name;
-    if (call.parseError) return `• ${getToolInvocationLabel(name, catalog)}：格式错误`;
+    if (isBlocking(call)) return `• ${getToolInvocationLabel(name, catalog)}：格式错误`;
     const detail = (call.payload as any).name || (call.payload as any).content || (call.payload as any).id || '';
     return `• ${getToolInvocationLabel(name, catalog)}${detail ? '：' + detail : ''}`;
   });
-  const executedCount = calls.filter(call => !call.parseError).length;
+  const executedCount = calls.filter(call => !isBlocking(call)).length;
   const header = executedCount === calls.length
     ? `🔧 已调用工具（${calls.length}次）`
     : `🔧 已调用工具（${executedCount}次，${calls.length - executedCount}次格式错误）`;
