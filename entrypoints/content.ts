@@ -8155,7 +8155,52 @@ function renderRestoredInlineAgentTraces(): number {
     pendingRestoredInlineAgentTraceIds.delete(id);
   }
 
+  pairNotedEmptyMessagesWithTraces(messages, usedMessages);
   return pendingRestoredInlineAgentTraceIds.size;
+}
+
+/**
+ * Last-resort restore anchoring for TOOL-FIRST runs (live finding, smoke
+ * 2026-09-18): their anchor message is the stripped-empty bubble, so neither
+ * DOM-id nor content matching can find it. Those traces (empty anchor
+ * content, last step carries tool executions) pair IN ORDER with the
+ * note-marked empty messages (same history order), so a completed tool-first
+ * run still restores its console instead of staying unmounted forever.
+ */
+function pairNotedEmptyMessagesWithTraces(
+  messages: Element[],
+  usedMessages: Set<Element>,
+): void {
+  const unmatched: InlineAgentTraceRecord[] = [];
+  for (const id of [...pendingRestoredInlineAgentTraceIds]) {
+    const trace = restoredInlineAgentTraces.get(id);
+    if (!trace || trace.steps.length === 0) continue;
+    // An empty anchor content means the anchor turn had no visible text -
+    // exactly the stripped tool-call bubble. (The executed tool may live in
+    // the tool-execution records rather than the trace steps: a turn-0
+    // manual execution runs BEFORE the loop's first step.)
+    if ((trace.anchorContent ?? "").trim().length > 0) continue;
+    unmatched.push(trace);
+  }
+  if (unmatched.length === 0) return;
+
+  const noted = Array.from(
+    document.querySelectorAll(
+      '.ds-message [data-dpp-stripped-note="true"], .ds-message[data-dpp-stripped-note="true"]',
+    ),
+  )
+    .map((note) => note.closest(".ds-message"))
+    .filter((message): message is Element => Boolean(message && !usedMessages.has(message)));
+  if (noted.length === 0) return;
+
+  for (const trace of unmatched) {
+    const target = noted.shift();
+    if (!target) break;
+    const container = createRestoredInlineAgentContainer(trace);
+    mountRestoredInlineAgentContainer(target, container, trace);
+    usedMessages.add(target);
+    pendingRestoredInlineAgentTraceIds.delete(trace.id);
+  }
 }
 
 function findRestoredInlineAgentTrace(id: string): Element | null {

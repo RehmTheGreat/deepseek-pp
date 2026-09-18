@@ -91,4 +91,20 @@ describe('restored inline-agent console (source contracts, content entrypoint pa
     expect(measureFn).toContain('window.getComputedStyle(element).fontSize');
     expect(measureFn).toContain('document.body');
   });
+
+  it('pairs anchor-less tool-first traces with noted empty bubbles in order', () => {
+    // Live finding (smoke 2026-09-18): a tool-first run's anchor message is
+    // the stripped-empty bubble, so neither id nor content matching can find
+    // it. The restore render pairs those traces (empty anchor content, last
+    // step carries tool executions) with the note-marked empty messages in
+    // order, instead of leaving the console unmounted forever.
+    const source = afterMarker('function renderRestoredInlineAgentTraces(')
+      .split('\nfunction ')[0];
+    expect(source).toContain('pairNotedEmptyMessagesWithTraces(');
+    const pairFn = afterMarker('function pairNotedEmptyMessagesWithTraces(')
+      .split('\nfunction ')[0];
+    expect(pairFn).toContain('anchorContent');
+    expect(pairFn).toContain('.trim().length > 0');
+    expect(pairFn).toContain('data-dpp-stripped-note');
+  });
 });
