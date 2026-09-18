@@ -197,6 +197,39 @@ describe('content-script wiring of the loop gate (source contract)', () => {
     expect(contentSource).toContain('takeDeferredFirstTurnSpawnSeeds(');
   });
 
+  it('honors the deferred-spawn fall-through contract (no request identity => structured failure, never a fake-ok card)', () => {
+    // Review fix (task review 2026-09-18): runToolExecution must HONOR
+    // deferFirstTurnSpawnCallToLoop's boolean. When the defer fails (the call
+    // has no source.requestId), the call FALLS THROUGH to the normal manual
+    // execution path below — a grant-less spawn call fails closed there with
+    // a structured error. The ok-true "Queued" card may only ever be returned
+    // from INSIDE the successful-defer guard; a silent drop behind a fake-ok
+    // card is exactly the failure mode this contract forbids.
+    const guardIndex = contentSource.indexOf('if (deferFirstTurnSpawnCallToLoop(call, session)) {');
+    expect(guardIndex).toBeGreaterThan(-1);
+    // The "Queued" summary is returned inside the guard only...
+    const queuedIndex = contentSource.indexOf('content.agent.subagentDeferred', guardIndex);
+    expect(queuedIndex).toBeGreaterThan(guardIndex);
+    // ...and the fall-through reaches the normal manual execution closure
+    // (the async task that calls executeToolCall and records the structured
+    // failure into the session).
+    const taskIndex = contentSource.indexOf('const task = (async () => {', guardIndex);
+    expect(taskIndex).toBeGreaterThan(queuedIndex);
+    // Side-effect-free failure: inside deferFirstTurnSpawnCallToLoop the
+    // pending-row removal must come AFTER the request-identity early return,
+    // so a call that cannot seed leaves the pending row for the fall-through
+    // path to finalize (no half-deferred state).
+    const deferFnIndex = contentSource.indexOf('function deferFirstTurnSpawnCallToLoop(');
+    expect(deferFnIndex).toBeGreaterThan(-1);
+    const identityGuardIndex = contentSource.indexOf(
+      'if (!requestId || !stabilized.id) return false;',
+      deferFnIndex,
+    );
+    const removeIndex = contentSource.indexOf('removePendingToolExecution(session, call);', deferFnIndex);
+    expect(identityGuardIndex).toBeGreaterThan(deferFnIndex);
+    expect(removeIndex).toBeGreaterThan(identityGuardIndex);
+  });
+
   it('requests the loop grant over the FULL turn catalog with spawn merged (no descriptor subset)', () => {
     expect(contentSource).toMatch(
       /toolDescriptors:\s*withInlineAgentSubagentSpawnDescriptor\(\s*authorization\.descriptors,\s*\),/,

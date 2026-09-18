@@ -6099,11 +6099,16 @@ function runToolExecution(call: ToolCall): Promise<ToolCardResult> {
   // identity cannot seed; it falls through to the normal path, which fails
   // closed with a structured error instead of dropping silently.
   if (isInlineAgentSubagentSpawnCall(call)) {
-    deferFirstTurnSpawnCallToLoop(call, session);
-    return Promise.resolve({
-      ok: true,
-      summary: contentT("content.agent.subagentDeferred"),
-    });
+    if (deferFirstTurnSpawnCallToLoop(call, session)) {
+      return Promise.resolve({
+        ok: true,
+        summary: contentT("content.agent.subagentDeferred"),
+      });
+    }
+    // Defer failed (no request identity): fall through to the normal manual
+    // path below, which fails closed with a structured error for a grant-less
+    // spawn call — never a fake-ok "Queued" card, never a silent drop
+    // (review fix: honor the deferred-spawn fall-through contract).
   }
   const task = (async () => {
     if (isExternalizedToolPayloadCall(call)) {
@@ -6185,19 +6190,19 @@ function takeDeferredFirstTurnSpawnSeeds(
  * stabilized call plus its pending seed record are stashed under the turn's
  * requestId, and RESPONSE_COMPLETE hands both to the loop-start gate. A
  * replayed TOOL_CALL for the same id is deduped by callId. In-memory only.
- * Returns false when the call cannot seed (no request identity): the caller
- * then falls through to the normal manual path, which fails closed with a
- * structured error — a first-turn spawn is NEVER dropped silently and NEVER
- * executed outside the loop-owned authorized path.
+ * Returns false when the call cannot seed (no request identity), SIDE-EFFECT
+ * FREE: the caller then falls through to the normal manual path, which fails
+ * closed with a structured error — a first-turn spawn is NEVER dropped
+ * silently and NEVER executed outside the loop-owned authorized path.
  */
 function deferFirstTurnSpawnCallToLoop(
   call: ToolCall,
   session: ActiveToolBlockSession,
 ): boolean {
-  removePendingToolExecution(session, call);
   const stabilized = ensureToolCallId(call);
   const requestId = stabilized.source?.requestId;
   if (!requestId || !stabilized.id) return false;
+  removePendingToolExecution(session, call);
   const seeds = deferredFirstTurnSpawnSeeds.get(requestId) ?? [];
   if (seeds.some((seed) => seed.record.callId === stabilized.id)) return true;
   seeds.push({
