@@ -21,6 +21,7 @@
  *    the parent's AbortSignal. There is no second execution path.
  */
 import { DEFAULT_LOCALE, translate, type SupportedLocale } from '../i18n/background';
+import { normalizeInlineAgentFinalAnswerText } from './prompt';
 import type { ToolDescriptor } from '../tool/types';
 import type { InlineAgentSubagentSpawnPayload } from './types';
 import {
@@ -258,9 +259,16 @@ export function describeInlineAgentSubagentSpawnResult(
   });
 
   if (result.ok) {
+    // Consume the taught `<task_complete>` signal out of the deliverable
+    // (Defect 4, 2026-09-18): the machine wrapper must never leak into the
+    // parent's tool result or the console row. The normalizer replaces the
+    // wrapper with its parsed summary, falls back to the inner text when no
+    // summary exists (and on malformed JSON), and passes wrapper-free text
+    // through unchanged.
+    const deliverable = normalizeInlineAgentFinalAnswerText(result.finalText);
     return {
       ok: true,
-      summary: result.finalText || translate(locale, 'content.agent.subagentNoFinalText'),
+      summary: deliverable || translate(locale, 'content.agent.subagentNoFinalText'),
       detail: statusDetail,
     };
   }

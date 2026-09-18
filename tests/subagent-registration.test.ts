@@ -296,6 +296,99 @@ describe('spawn result to tool-result mapping (M4 wiring note 4)', () => {
     expect(described.ok).toBe(true);
     expect(described.summary.length).toBeGreaterThan(0);
   });
+
+  it('consumes the task_complete signal: deliverable kept, wrapper replaced by the summary', () => {
+    const described = describeInlineAgentSubagentSpawnResult('en', {
+      ok: true,
+      refused: false,
+      childTraceId: 'subagent:t:1',
+      childLoopId: 'subagent:l:1',
+      status: 'complete',
+      finalText: [
+        'Soft rain on the roof',
+        'Grey clouds fold over the hills',
+        'Petals drink and shine',
+        '',
+        '<task_complete>{"summary":"Wrote a single 5-7-5 haiku about rain."}</task_complete>',
+      ].join('\n'),
+      totalSteps: 1,
+      totalTools: 0,
+      deadlineExceeded: false,
+    });
+    expect(described.ok).toBe(true);
+    expect(described.summary).not.toContain('<task_complete>');
+    expect(described.summary).not.toContain('</task_complete>');
+    expect(described.summary).not.toContain('"summary"');
+    expect(described.summary).toContain('Soft rain on the roof');
+    expect(described.summary).toContain('Wrote a single 5-7-5 haiku about rain.');
+  });
+
+  it('a wrapper-only final text becomes the clean summary deliverable', () => {
+    const described = describeInlineAgentSubagentSpawnResult('en', {
+      ok: true,
+      refused: false,
+      childTraceId: 'subagent:t:1',
+      childLoopId: 'subagent:l:1',
+      status: 'complete',
+      finalText: '<task_complete>{"summary":"Sorted the ledger and saved it."}</task_complete>',
+      totalSteps: 2,
+      totalTools: 1,
+      deadlineExceeded: false,
+    });
+    expect(described.ok).toBe(true);
+    expect(described.summary).toBe('Sorted the ledger and saved it.');
+  });
+
+  it('a wrapper without a summary falls back to the text minus the wrapper', () => {
+    const described = describeInlineAgentSubagentSpawnResult('en', {
+      ok: true,
+      refused: false,
+      childTraceId: 'subagent:t:1',
+      childLoopId: 'subagent:l:1',
+      status: 'complete',
+      finalText: 'The ledger is sorted.\n<task_complete>{"artifacts":[]}</task_complete>',
+      totalSteps: 1,
+      totalTools: 0,
+      deadlineExceeded: false,
+    });
+    expect(described.ok).toBe(true);
+    expect(described.summary).not.toContain('<task_complete>');
+    expect(described.summary).toContain('The ledger is sorted.');
+  });
+
+  it('a malformed wrapper strips the tags and keeps the inner text', () => {
+    const described = describeInlineAgentSubagentSpawnResult('en', {
+      ok: true,
+      refused: false,
+      childTraceId: 'subagent:t:1',
+      childLoopId: 'subagent:l:1',
+      status: 'complete',
+      finalText: 'Draft one.\n<task_complete>not json</task_complete>',
+      totalSteps: 1,
+      totalTools: 0,
+      deadlineExceeded: false,
+    });
+    expect(described.ok).toBe(true);
+    expect(described.summary).not.toContain('<task_complete>');
+    expect(described.summary).toContain('Draft one.');
+    expect(described.summary).toContain('not json');
+  });
+
+  it('a final text without any wrapper passes through unchanged', () => {
+    const described = describeInlineAgentSubagentSpawnResult('en', {
+      ok: true,
+      refused: false,
+      childTraceId: 'subagent:t:1',
+      childLoopId: 'subagent:l:1',
+      status: 'complete',
+      finalText: 'The answer from the child run.',
+      totalSteps: 2,
+      totalTools: 1,
+      deadlineExceeded: false,
+    });
+    expect(described.ok).toBe(true);
+    expect(described.summary).toBe('The answer from the child run.');
+  });
 });
 
 describe('M5 wiring seams (source contracts, content entrypoint pattern)', () => {
