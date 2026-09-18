@@ -7,7 +7,10 @@ import {
   buildContinuationPrompt,
   buildNudgePrompt,
   buildResumePrompt,
+  buildSubagentTaskPrompt,
   INLINE_AGENT_CONTINUATION_PLACEHOLDER,
+  isInlineAgentContinuationRequest,
+  isInlineAgentContinuationStructure,
   normalizeInlineAgentFinalAnswerText,
 } from '../core/inline-agent/prompt';
 import { withInlineAgentSubagentSpawnDescriptor } from '../core/inline-agent/subagent-tool';
@@ -245,6 +248,46 @@ describe('inline-agent output compatibility contract', () => {
     );
 
     expectUtf8Golden('inline/resume.txt', `resume:\n${resume}\n\nresume-zh:\n${resumeZh}`);
+  });
+
+  it('freezes exact subagent child task prompt bytes (dedicated intro, no empty tool_results)', () => {
+    // Child framing (spawn-quality diagnosis §4.2, authorized byte change):
+    // a subagent child's FIRST request must NOT be the continuation template
+    // with its false "tool results just executed" premise and literal
+    // `<tool_results> []`. The dedicated intro establishes subagent identity
+    // and the deliverable contract; the `<original_task>` pair stays so the
+    // continuation detectors keep the child turn invisible in the DS chat.
+    const loopDescriptors = withInlineAgentSubagentSpawnDescriptor(
+      createRepresentativeToolDescriptors(),
+    );
+    const task = 'Reply with exactly one word: banana';
+    const taskPrompt = buildSubagentTaskPrompt(task, 'en', loopDescriptors);
+    const taskPromptNoTools = buildSubagentTaskPrompt(task, 'en');
+    const taskPromptZh = buildSubagentTaskPrompt(task, 'zh-CN', loopDescriptors);
+
+    expect(taskPrompt).not.toContain('<tool_results>');
+    expect(taskPrompt).not.toContain('tool results just executed');
+    expect(taskPrompt).toContain('<original_task>');
+    expect(taskPrompt).toContain(task);
+    expect(taskPromptNoTools).not.toContain('### Tool');
+    expect(taskPrompt).toContain('### Tool');
+    // Detector safety: the child's first request stays classified as an
+    // internal inline-agent turn on BOTH detector legs (page suppression and
+    // live-DOM structural hiding).
+    expect(isInlineAgentContinuationRequest(taskPrompt, taskPrompt)).toBe(true);
+    expect(isInlineAgentContinuationStructure(taskPrompt)).toBe(true);
+    expect(isInlineAgentContinuationStructure(taskPromptZh)).toBe(true);
+    // A real user message never matches the detector (no tag pair).
+    expect(isInlineAgentContinuationStructure('Reply with exactly one word: banana')).toBe(false);
+
+    expectUtf8Golden(
+      'inline/subagent-task.txt',
+      [
+        `task:\n${taskPrompt}`,
+        `task-no-tools:\n${taskPromptNoTools}`,
+        `task-zh:\n${taskPromptZh}`,
+      ].join('\n\n'),
+    );
   });
 
   it('freezes truncation boundaries without storing oversized golden text', () => {

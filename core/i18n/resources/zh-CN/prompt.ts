@@ -24,6 +24,9 @@ export const prompt = {
     nudgeCount: '这是第 {count} 次无工具调用纠偏。',
     resumeInterrupted: '你之前的回复在流式输出中途被打断。请从上次中断的地方继续，不要重复已完成的工作。',
     resumeCount: '这是第 {count} 次流中断续跑。',
+    subagentTaskIntro: '你是一个为完成特定任务而启动的子代理。',
+    subagentTaskDeliverable: '使用你的工具执行任务，然后将最终交付物作为你的最后一条消息输出。',
+    subagentTaskContext: '上方的消息仅作为上下文：不要回应它们，也不要汇报此前的轮次。',
   },
   automation: {
     continuationIntro: '以下是自动化任务刚刚执行的 MCP 工具结果。请基于这些结果继续完成自动化任务。',

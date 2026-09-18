@@ -85,6 +85,11 @@ const lineAllowlist = [
     reason: 'inline-agent auto-resume prompt marker detection (byte-identical zh-CN prefix of prompt.inlineAgent.resumeInterrupted)',
   },
   {
+    path: 'core/inline-agent/prompt.ts',
+    includes: '你是一个为完成特定任务而启动的子代理。',
+    reason: 'inline-agent subagent child task prompt marker detection (byte-identical zh-CN prefix of prompt.inlineAgent.subagentTaskIntro)',
+  },
+  {
     path: 'core/interceptor/tool-parser.ts',
     includes: '格式错误',
     reason: 'unused legacy DSML summary renderer retained for compatibility',

@@ -521,6 +521,11 @@ export function createInlineAgentSubagentRunner(
       toolExecutions: [],
       promptOptions: deps.promptOptions,
       toolDescriptors,
+      // Child framing (spawn-quality diagnosis fix 2): the child's FIRST
+      // request gets the dedicated subagent task intro (loop-adapter
+      // serializePrompt), not the continuation template with its empty
+      // `<tool_results> []` premise.
+      subagentChildTask: true,
       ...(deps.locale === undefined ? null : { locale: deps.locale }),
       ...(deps.powWasmUrl === undefined ? null : { powWasmUrl: deps.powWasmUrl }),
       ...(deps.modelBackend === undefined ? null : { modelBackend: deps.modelBackend }),

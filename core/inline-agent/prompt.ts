@@ -69,10 +69,40 @@ function hasInlineAgentResumePromptMarker(content: string): boolean {
   return INLINE_AGENT_RESUME_INTERRUPTED_MARKERS.some((marker) => content.includes(marker));
 }
 
+/**
+ * Subagent child framing markers (spawn-quality diagnosis fix 2): the child's
+ * FIRST request carries the dedicated task intro instead of the continuation
+ * template. Byte-identical prefixes of the `prompt.inlineAgent.subagentTaskIntro`
+ * resources locked by the prompt goldens. Detector duty is identical to the
+ * resume markers above: the `<original_task>` pair plus this exact sentence
+ * classifies the turn as an internal inline-agent request (page-event
+ * suppression, history hiding) so the child's task never renders as a visible
+ * user bubble in the DS chat.
+ */
+const INLINE_AGENT_SUBAGENT_TASK_MARKERS = [
+  'You are a subagent spawned to complete a specific task.',
+  '你是一个为完成特定任务而启动的子代理。',
+] as const;
+
+function hasInlineAgentSubagentTaskMarker(content: string): boolean {
+  return INLINE_AGENT_SUBAGENT_TASK_MARKERS.some((marker) => content.includes(marker));
+}
+
 /** The auto-resume shape: `<original_task>` pair + resume instruction line, no tool results. */
 function hasInlineAgentResumePromptTags(content: string): boolean {
   if (!content.includes('<original_task>') || !content.includes('</original_task>')) return false;
   return hasInlineAgentResumePromptMarker(content);
+}
+
+/**
+ * The subagent child first-request shape: `<original_task>` pair + the
+ * dedicated subagent task intro line, no tool results (the child has executed
+ * nothing yet — the empty `<tool_results> []` premise is exactly what the
+ * child framing fix removed).
+ */
+function hasInlineAgentSubagentTaskTags(content: string): boolean {
+  if (!content.includes('<original_task>') || !content.includes('</original_task>')) return false;
+  return hasInlineAgentSubagentTaskMarker(content);
 }
 
 /**
@@ -87,9 +117,11 @@ export function isInlineAgentContinuationRequest(originalPrompt: string, agentTa
 }
 
 export function isInlineAgentContinuationPrompt(content: string): boolean {
-  // The auto-resume shape is recognized by its own pair+marker rule; the
-  // keyword list below applies to the tool-results continuation/nudge shape.
+  // The auto-resume and subagent-child first-request shapes are recognized by
+  // their own pair+marker rules; the keyword list below applies to the
+  // tool-results continuation/nudge shape.
   if (hasInlineAgentResumePromptTags(content)) return true;
+  if (hasInlineAgentSubagentTaskTags(content)) return true;
   if (!hasInlineAgentContinuationTags(content)) return false;
 
   return content.includes('工具续跑任务') ||
@@ -113,7 +145,9 @@ export function isInlineAgentContinuationPrompt(content: string): boolean {
  * raw prompt text is intact and false positives are costlier.
  */
 export function isInlineAgentContinuationStructure(content: string): boolean {
-  return hasInlineAgentContinuationTags(content) || hasInlineAgentResumePromptTags(content);
+  return hasInlineAgentContinuationTags(content)
+    || hasInlineAgentResumePromptTags(content)
+    || hasInlineAgentSubagentTaskTags(content);
 }
 
 function getTaskCompleteSummary(body: string): string {
@@ -209,6 +243,43 @@ export function buildContinuationPrompt(
     '<tool_results>',
     JSON.stringify(results, null, 2),
     '</tool_results>',
+    ...renderLoopToolSection(toolDescriptors, locale),
+  ].join('\n');
+}
+
+/**
+ * Builds a subagent child's FIRST request prompt (child framing fix,
+ * spawn-quality diagnosis §4.2). The child is NOT continuing a tool turn: it
+ * has executed nothing yet, so the released continuation template's "these
+ * are the tool results just executed" premise and its literal
+ * `<tool_results> []` are a lie the child model quoted back verbatim. This
+ * dedicated intro instead establishes subagent identity, isolates the
+ * ambient conversation ("messages above are context only"), and states the
+ * deliverable contract: execute the task with the child's tools, then emit
+ * the final deliverable as the last message (the child's final text IS the
+ * parent's tool result, unchanged).
+ *
+ * The `<original_task>` pair is kept (with the pair+marker detector legs in
+ * this module) so the child's first request stays classified as an internal
+ * inline-agent turn everywhere (fetch-hook page-event suppression, history
+ * cleanup, live-DOM structural hiding) — without it the child's task would
+ * render as a visible user bubble in the DS chat. The tool-schema section is
+ * appended from the child's DERIVED descriptor set (spawn-free, depth 1),
+ * exactly like every other loop request.
+ */
+export function buildSubagentTaskPrompt(
+  task: string,
+  locale: SupportedLocale = DEFAULT_LOCALE,
+  toolDescriptors?: readonly ToolDescriptor[],
+): string {
+  return [
+    translate(locale, 'prompt.inlineAgent.subagentTaskIntro'),
+    translate(locale, 'prompt.inlineAgent.subagentTaskDeliverable'),
+    translate(locale, 'prompt.inlineAgent.subagentTaskContext'),
+    '',
+    '<original_task>',
+    clampText(task, 8000),
+    '</original_task>',
     ...renderLoopToolSection(toolDescriptors, locale),
   ].join('\n');
 }

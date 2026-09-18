@@ -649,4 +649,134 @@ describe('E2E advertisement + spawn flow (uniform-tools task 4)', () => {
     expect(events.some((event) => event.type === 'AGENT_LOOP_COMPLETE')).toBe(true);
     expect(events.some((event) => event.type === 'AGENT_LOOP_ERROR')).toBe(false);
   });
+
+  it('frames a child run with the dedicated subagent task prompt, not the continuation template', async () => {
+    vi.useFakeTimers();
+    // Child framing (spawn-quality diagnosis §4.2): the child's FIRST request
+    // must establish subagent identity + the deliverable contract and must
+    // NOT assert the false "tool results just executed" premise with a
+    // literal `<tool_results> []`. The SECOND request (after a real tool
+    // call) keeps the released continuation template.
+    adapterMocks.submitPromptStreaming
+      .mockImplementationOnce(async (_input: unknown, handlers: { onTextChunk: (t: string) => void }) => {
+        handlers.onTextChunk('<subagent_spawn>{"task":"Reply with exactly one word: banana"}</subagent_spawn>');
+        return { assistantText: '', responseMessageId: 102, requestMessageId: 101, finished: true };
+      })
+      .mockImplementationOnce(async (_input: unknown, handlers: { onTextChunk: (t: string) => void }) => {
+        handlers.onTextChunk('<shell_exec>{"command":"echo hi"}</shell_exec>');
+        return { assistantText: '', responseMessageId: 202, requestMessageId: 201, finished: true };
+      })
+      .mockImplementationOnce(async (_input: unknown, handlers: { onTextChunk: (t: string) => void }) => {
+        handlers.onTextChunk('banana');
+        return { assistantText: '', responseMessageId: 203, requestMessageId: 204, finished: true };
+      })
+      .mockImplementationOnce(async (_input: unknown, handlers: { onTextChunk: (t: string) => void }) => {
+        handlers.onTextChunk('Parent done.');
+        return { assistantText: '', responseMessageId: 104, requestMessageId: 103, finished: true };
+      });
+
+    const loopDescriptors = withInlineAgentSubagentSpawnDescriptor([
+      descriptor('web_search'),
+      descriptor('shell_exec'),
+    ]);
+    const store = createInlineAgentTraceStore(createMemorySlot({ present: false }));
+    const controller = new AbortController();
+    const sessionRef: { current: DeepSeekSessionState | null } = { current: null };
+    const claimedSpawnCallIds = new Set<string>();
+    // The child's own tool execution path: the derived (spawn-free) catalog
+    // executes shell_exec normally.
+    const backgroundExecuteTool = vi.fn(async (_call: { name: string }) => ({
+      name: 'shell_exec',
+      result: { ok: true, summary: 'hi' },
+    }));
+    const runner = createInlineAgentSubagentRunner({
+      parentTraceId: 'trace-task',
+      parentLoopId: 'loop-task',
+      chatSessionId: 'chat-1',
+      traceUrl: 'https://chat.deepseek.com/a/chat/s/chat-1',
+      promptOptions: { modelType: null, searchEnabled: false, thinkingEnabled: false, refFileIds: [] },
+      toolDescriptors: loopDescriptors,
+      executeTool: backgroundExecuteTool,
+      signal: controller.signal,
+      upsertTrace: (trace) => store.upsert(trace),
+      locale: 'en',
+    });
+    const executeTool = vi.fn(async (call: {
+      id?: string;
+      name: string;
+      payload: unknown;
+    }) => {
+      if (!isInlineAgentSubagentSpawnCall(call)) return backgroundExecuteTool(call);
+      const parsed = parseInlineAgentSubagentSpawnPayload(call.payload);
+      if (!parsed.ok) throw new Error('payload must parse in this test');
+      const claim = claimInlineAgentSubagentSpawnCall(claimedSpawnCallIds, call.id ?? '');
+      if (!claim.ok) throw new Error('claim must succeed in this test');
+      const spawnResult = await runner.spawn({
+        payload: parsed.payload,
+        chainParentMessageId: sessionRef.current?.parentMessageId ?? 100,
+      });
+      const described = describeInlineAgentSubagentSpawnResult('en', spawnResult);
+      return {
+        name: call.name,
+        result: {
+          ok: described.ok,
+          summary: described.summary,
+          detail: described.detail,
+          error: described.error,
+        },
+      };
+    });
+
+    const run = runInlineAgentLoop(
+      {
+        loopId: 'loop-task',
+        chatSessionId: 'chat-1',
+        parentMessageId: 100,
+        originalPrompt: 'Parent task needing a subagent.',
+        agentTaskPrompt: 'Parent task needing a subagent.',
+        toolExecutions: [],
+        promptOptions: { modelType: null, searchEnabled: false, thinkingEnabled: false, refFileIds: [] },
+        toolDescriptors: loopDescriptors,
+        locale: 'en',
+      },
+      {
+        post: () => {},
+        executeTool,
+        signal: controller.signal,
+        sessionRef,
+      },
+    );
+    await vi.advanceTimersByTimeAsync(15_000);
+    await run;
+
+    const calls = adapterMocks.submitPromptStreaming.mock.calls;
+    expect(calls).toHaveLength(4); // parent → child turn 1 → child turn 2 → parent
+    const childFirstPrompt = String((calls[1]?.[0] as { prompt?: string }).prompt ?? '');
+    const childSecondPrompt = String((calls[2]?.[0] as { prompt?: string }).prompt ?? '');
+
+    // FIRST child request: dedicated subagent framing.
+    expect(childFirstPrompt).toContain('You are a subagent spawned to complete a specific task.');
+    expect(childFirstPrompt).toContain('final deliverable');
+    expect(childFirstPrompt).toContain('<original_task>');
+    expect(childFirstPrompt).toContain('Reply with exactly one word: banana');
+    // The false premise is gone: no empty tool_results, no continuation claim.
+    expect(childFirstPrompt).not.toContain('<tool_results>');
+    expect(childFirstPrompt).not.toContain('tool results just executed');
+    // The child still sees its tool schemas on the first request.
+    expect(childFirstPrompt).toContain('### Tool shell_exec');
+    // Detector safety: the child's first turn stays an internal turn.
+    const { isInlineAgentContinuationStructure } = await import('../core/inline-agent/prompt');
+    expect(isInlineAgentContinuationStructure(childFirstPrompt)).toBe(true);
+
+    // SECOND child request (after the real tool call): the released
+    // continuation template is back, carrying the shell_exec result.
+    expect(childSecondPrompt).toContain('tool results just executed');
+    expect(childSecondPrompt).toContain('<tool_results>');
+    expect(childSecondPrompt).toContain('shell_exec');
+
+    // The child's deliverable finalized as its final text, verbatim.
+    const rows = await store.read();
+    const childRow = rows.find((row) => row.parentTraceId === 'trace-task');
+    expect(childRow).toMatchObject({ status: 'complete', finalText: 'banana' });
+  });
 });

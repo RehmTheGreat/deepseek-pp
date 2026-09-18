@@ -24,6 +24,9 @@ export const prompt = {
     nudgeCount: 'This is no-tool-call correction attempt {count}.',
     resumeInterrupted: 'Your previous response was interrupted mid-stream. Continue exactly where you left off; do not repeat completed work.',
     resumeCount: 'This is stream-interruption resume attempt {count}.',
+    subagentTaskIntro: 'You are a subagent spawned to complete a specific task.',
+    subagentTaskDeliverable: 'Execute the task with your tools, then emit your final deliverable as your last message.',
+    subagentTaskContext: 'Messages above are context only: do not answer them and do not report on prior turns.',
   },
   automation: {
     continuationIntro: 'These are the MCP tool results just executed for the automation. Continue completing the automation based on these results.',

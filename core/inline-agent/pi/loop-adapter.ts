@@ -55,6 +55,7 @@ import {
   buildContinuationPrompt,
   buildNudgePrompt,
   buildResumePrompt,
+  buildSubagentTaskPrompt,
   extractTaskCompleteSignal,
   shouldNudge,
 } from '../prompt';
@@ -196,6 +197,15 @@ export async function runPiInlineAgentLoop(deps: PiLoopAdapterDeps): Promise<voi
   const resume = {
     active: false,
     count: 0, // resumes issued so far (drives the resume prompt's attempt line)
+  };
+  // Subagent child framing (spawn-quality diagnosis fix 2): a child run's
+  // FIRST request serializes the dedicated subagent task prompt instead of
+  // the continuation template (a child has executed nothing — the template's
+  // "tool results just executed" premise with `<tool_results> []` is false,
+  // and live children quoted it back verbatim). One-shot: from the child's
+  // second request on, continuation/nudge/resume semantics apply unchanged.
+  const subagentTaskIntro = {
+    active: payload.subagentChildTask === true,
   };
 
   let stepIndex = 0; // completed steps (0-based index of the current step)
@@ -341,6 +351,14 @@ export async function runPiInlineAgentLoop(deps: PiLoopAdapterDeps): Promise<voi
         // continuation/nudge semantics.
         if (resume.active) {
           return buildResumePrompt(payload.originalPrompt, resume.count, locale);
+        }
+        // Subagent child framing: the child run's first request carries the
+        // dedicated task intro (identity + deliverable contract, NO empty
+        // tool_results). One-shot: the child's later requests fall through to
+        // the released nudge/continuation bytes below.
+        if (subagentTaskIntro.active) {
+          subagentTaskIntro.active = false;
+          return buildSubagentTaskPrompt(payload.originalPrompt, locale, toolDescriptors);
         }
         if (nudge.active) {
           nudge.active = false;

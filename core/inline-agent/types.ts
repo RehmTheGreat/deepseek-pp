@@ -31,6 +31,16 @@ export interface InlineAgentStartPayload {
    * nothing was dropped.
    */
   unavailableToolNames?: string[];
+  /**
+   * Subagent child framing (spawn-quality diagnosis fix 2): true when this
+   * payload is a subagent CHILD run (set by `buildChildPayload`). The loop's
+   * FIRST model request then carries the dedicated subagent task intro
+   * (`buildSubagentTaskPrompt`) instead of the continuation template with its
+   * false `<tool_results> []` premise; later requests keep the released
+   * continuation/nudge semantics. Children reuse `runPiInlineAgentLoop` —
+   * this flag never forks the loop implementation.
+   */
+  subagentChildTask?: boolean;
 }
 
 export interface InlineAgentPromptOptions {
