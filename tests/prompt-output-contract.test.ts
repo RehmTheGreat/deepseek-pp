@@ -98,7 +98,14 @@ describe('prompt output compatibility contract', () => {
       projectContext: '## Project Context\nRepository: deepseek-pp\nInvariant: preserve public behavior.',
       projectId: 'deepseek-pp',
       modelType: 'expert',
-      toolDescriptors: createRepresentativeToolDescriptors(),
+      // First-turn subagent access (pc directive 3): the manual_chat grant
+      // merges the spawn descriptor (background CREATE_TOOL_AUTHORIZATION),
+      // and handleAugmentRequestBody renders `authorization.descriptors` —
+      // the grant-shaped catalog below, so the frozen first-turn '### Tool'
+      // section advertises subagent_spawn. Authorized golden byte change.
+      toolDescriptors: withInlineAgentSubagentSpawnDescriptor(
+        createRepresentativeToolDescriptors(),
+      ),
       messageCount: 0,
       locale: 'en',
     });

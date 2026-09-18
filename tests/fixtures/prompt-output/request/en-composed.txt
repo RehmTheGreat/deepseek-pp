@@ -73,6 +73,18 @@ Valid call format for shell_exec:
 Invalid formats: <invoke name="shell_exec">...</invoke>, <tool_call>...</tool_call>
 Parameters JSON Schema: {"type":"object","properties":{"command":{"type":"string","description":"Shell command"},"cwd":{"type":"string","description":"Working directory file path"}},"required":["command"],"additionalProperties":false}
 
+### Tool subagent_spawn
+Title: 运行子代理
+Description: 启动一个聚焦的子代理任务来执行一个自包含的任务，并用其结果继续当前任务。子代理不能再启动子代理，使用本对话的工具（可用 toolAllowlistHint 收窄），其最终回答将作为本工具的结果返回。
+Valid call format for subagent_spawn:
+<subagent_spawn>
+{
+  "task": "value"
+}
+</subagent_spawn>
+Invalid formats: <invoke name="subagent_spawn">...</invoke>, <tool_call>...</tool_call>
+Parameters JSON Schema: {"type":"object","properties":{"task":{"type":"string","description":"子代理任务的完整、自包含描述，需包含目标、上下文与期望交付物。"},"toolAllowlistHint":{"type":"array","items":{"type":"string"},"description":"可选的提示性工具名单：仅列出应暴露给子代理的工具名称，未列出的工具将被隐藏，未知名称将被忽略。"}},"required":["task"],"additionalProperties":false}
+
 You MUST strictly follow the tool names and parameter schemas above when invoking tools.
 
 When the user reveals important durable information (identity, preference, behavior correction, or important decision), you MUST call memory_save. You may call tools anywhere in your reply. Save only information with long-term value; do not duplicate existing memories.
@@ -102,7 +114,7 @@ Audit sync compatibility
 
 ---
 Tool call format reminder:
-Available tool tag names: memory_save, mcp_browser_tools_capture_page, capture_page, mcp_shell_local_shell_exec, shell_exec
+Available tool tag names: memory_save, mcp_browser_tools_capture_page, capture_page, mcp_shell_local_shell_exec, shell_exec, subagent_spawn
 These listed tools are executable by the extension. Do not claim you cannot call a listed MCP tool.
 To call a tool, use ONLY the direct XML tag whose name is the tool name, with valid JSON as the body.
 For MCP tools, prefer the short tag name when it appears in the available names list.
