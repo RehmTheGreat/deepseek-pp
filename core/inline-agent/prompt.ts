@@ -257,7 +257,11 @@ export function buildContinuationPrompt(
  * ambient conversation ("messages above are context only"), and states the
  * deliverable contract: execute the task with the child's tools, then emit
  * the final deliverable as the last message (the child's final text IS the
- * parent's tool result, unchanged).
+ * parent's tool result, unchanged). It also teaches the explicit
+ * `<task_complete>` signal up front (diagnosis §4.2, task-review fix 2) so
+ * the stop rule never has to rely on the pending-tail heuristic alone —
+ * before this line, `<task_complete>` was taught only in nudge prompts,
+ * which a healthy-looking child answer never triggers.
  *
  * The `<original_task>` pair is kept (with the pair+marker detector legs in
  * this module) so the child's first request stays classified as an internal
@@ -276,6 +280,7 @@ export function buildSubagentTaskPrompt(
     translate(locale, 'prompt.inlineAgent.subagentTaskIntro'),
     translate(locale, 'prompt.inlineAgent.subagentTaskDeliverable'),
     translate(locale, 'prompt.inlineAgent.subagentTaskContext'),
+    translate(locale, 'prompt.inlineAgent.subagentTaskComplete'),
     '',
     '<original_task>',
     clampText(task, 8000),

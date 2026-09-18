@@ -27,6 +27,7 @@ export const prompt = {
     subagentTaskIntro: '你是一个为完成特定任务而启动的子代理。',
     subagentTaskDeliverable: '使用你的工具执行任务，然后将最终交付物作为你的最后一条消息输出。',
     subagentTaskContext: '上方的消息仅作为上下文：不要回应它们，也不要汇报此前的轮次。',
+    subagentTaskComplete: '任务完成后，在最后一行输出 <task_complete>{"summary":"..."}</task_complete>。',
   },
   automation: {
     continuationIntro: '以下是自动化任务刚刚执行的 MCP 工具结果。请基于这些结果继续完成自动化任务。',

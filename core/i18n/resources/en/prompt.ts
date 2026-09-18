@@ -27,6 +27,7 @@ export const prompt = {
     subagentTaskIntro: 'You are a subagent spawned to complete a specific task.',
     subagentTaskDeliverable: 'Execute the task with your tools, then emit your final deliverable as your last message.',
     subagentTaskContext: 'Messages above are context only: do not answer them and do not report on prior turns.',
+    subagentTaskComplete: 'When the task is done, emit <task_complete>{"summary":"..."}</task_complete> as your final line.',
   },
   automation: {
     continuationIntro: 'These are the MCP tool results just executed for the automation. Continue completing the automation based on these results.',

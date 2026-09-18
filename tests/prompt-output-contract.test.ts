@@ -276,6 +276,15 @@ describe('inline-agent output compatibility contract', () => {
     expect(taskPrompt).not.toContain('tool results just executed');
     expect(taskPrompt).toContain('<original_task>');
     expect(taskPrompt).toContain(task);
+    // Completion teaching (spawn-quality diagnosis §4.2, task-review fix 2):
+    // the child must learn the explicit <task_complete> signal on its FIRST
+    // request so the stop rule never relies on the pending-tail heuristic
+    // alone. The tag bytes mirror the nudge prompt's canonical form.
+    expect(taskPrompt).toContain(
+      'emit <task_complete>{"summary":"..."}</task_complete> as your final line',
+    );
+    expect(taskPromptNoTools).toContain('<task_complete>{"summary":"..."}</task_complete>');
+    expect(taskPromptZh).toContain('<task_complete>{"summary":"..."}</task_complete>');
     expect(taskPromptNoTools).not.toContain('### Tool');
     expect(taskPrompt).toContain('### Tool');
     // Detector safety: the child's first request stays classified as an
