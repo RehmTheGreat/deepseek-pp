@@ -8653,6 +8653,7 @@ function cleanRenderedToolCalls() {
     try {
       hideInlineAgentContinuationMessages(root);
       stripToolCallTextNodes(root);
+      ensureStrippedToolCallNote(root);
     } catch (error) {
       // Containment (renderer-crash class, 2026-09-18): one malformed stream
       // fragment must never take the page down through the cleanup loop. The
@@ -8666,6 +8667,33 @@ function cleanRenderedToolCalls() {
       }
     }
   }
+}
+
+/**
+ * Keeps a message whose ONLY visible content was recognized tool-call markup
+ * visually coherent (Defect 6, 2026-09-18): after the strip, DeepSeek's own
+ * edit/copy action buttons would otherwise offer actions on invisible
+ * content. A minimal muted placeholder line gives the native message an
+ * intentional body. Extension-owned, appended (never a React tree-shape
+ * mutation), and idempotent via the marker attribute; if the site re-renders
+ * the message the mutation hub re-runs this and the note re-mounts.
+ */
+function ensureStrippedToolCallNote(root: Element): void {
+  if (!(root instanceof HTMLElement) || !root.classList.contains("ds-message")) {
+    return;
+  }
+  if (root.querySelector('[data-dpp-stripped-note="true"]')) return;
+  const hosts = getAssistantContentHosts(root);
+  if (hosts.length === 0) return;
+  if (hosts.some((host) => (host.textContent ?? "").trim().length > 0)) return;
+  const note = document.createElement("div");
+  note.className = "dpp-stripped-tool-call-note";
+  note.setAttribute("data-dpp-stripped-note", "true");
+  note.textContent = contentT("content.agent.strippedToolCallNote");
+  note.style.color = "var(--dpp-ui-text-muted)";
+  note.style.fontSize = "var(--dpp-ui-font-chrome, 12px)";
+  note.style.padding = "2px 0";
+  hosts[0].appendChild(note);
 }
 
 function startInlineAgentContinuationMessageHider(
