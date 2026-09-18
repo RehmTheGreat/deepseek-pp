@@ -92,6 +92,30 @@ describe('restored inline-agent console (source contracts, content entrypoint pa
     expect(measureFn).toContain('document.body');
   });
 
+  it('renders a superseded run with exactly one terminal status (wave-2, prober #11)', () => {
+    // A superseded/stopped run closes as 'stopping' carrying the supersede
+    // banner text; its restored header must render the single interrupted
+    // status and never the success header. Only status 'complete' may render
+    // the complete header.
+    const source = afterMarker('function createRestoredInlineAgentContainer(')
+      .split('\nfunction ')[0];
+    expect(source).toContain('trace.status === "complete"');
+    expect(source).toContain('trace.status === "stopping"');
+    const stoppingBranch = source.slice(source.indexOf('trace.status === "stopping"'));
+    expect(stoppingBranch).toContain('"paused"');
+    expect(stoppingBranch).not.toContain('"complete"');
+    // The banner text rides the trace error field, rendered once as the
+    // header note.
+    expect(stoppingBranch).toContain('trace.error');
+  });
+
+  it('re-arms the restore render budget when traces are requeued (wave-2, prober restore reliability)', () => {
+    const source = afterMarker('function requeueRestoredInlineAgentTracesForCurrentRoute(')
+      .split('\nfunction ')[0];
+    expect(source).toContain('restoredInlineAgentRenderAttempts = 0');
+    expect(source).toContain('pendingRestoredInlineAgentTraceIds.has(id)');
+  });
+
   it('pairs anchor-less tool-first traces with noted empty bubbles in order', () => {
     // Live finding (smoke 2026-09-18): a tool-first run's anchor message is
     // the stripped-empty bubble, so neither id nor content matching can find

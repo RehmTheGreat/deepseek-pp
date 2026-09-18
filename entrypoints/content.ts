@@ -8097,11 +8097,21 @@ function isToolBlockSessionOnCurrentRoute(
 
 function requeueRestoredInlineAgentTracesForCurrentRoute(): void {
   const currentUrl = getToolBlockUrl();
+  let added = 0;
   for (const [id, trace] of restoredInlineAgentTraces) {
-    if (shouldTryRestoreInlineAgentTrace(trace, currentUrl)) {
+    if (
+      !pendingRestoredInlineAgentTraceIds.has(id) &&
+      shouldTryRestoreInlineAgentTrace(trace, currentUrl)
+    ) {
       pendingRestoredInlineAgentTraceIds.add(id);
+      added += 1;
     }
   }
+  // Restore reliability (wave 2): newly requeued ids restart the render
+  // budget, so a trace whose message mounts later (virtual list re-render,
+  // user scroll) is still rendered instead of dying with the expired timer
+  // budget. Every batch that actually adds ids gets a fresh chance.
+  if (added > 0) restoredInlineAgentRenderAttempts = 0;
 }
 
 function scheduleRenderRestoredInlineAgentTraces() {
