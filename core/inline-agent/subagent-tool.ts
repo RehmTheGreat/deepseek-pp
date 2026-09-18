@@ -21,7 +21,7 @@
  *    the parent's AbortSignal. There is no second execution path.
  */
 import { DEFAULT_LOCALE, translate, type SupportedLocale } from '../i18n/background';
-import { normalizeInlineAgentFinalAnswerText } from './prompt';
+import { stripDanglingLeadingPunctuation, TASK_COMPLETE_BLOCK_RE } from './prompt';
 import type { ToolDescriptor } from '../tool/types';
 import type { InlineAgentSubagentSpawnPayload } from './types';
 import {
@@ -260,15 +260,35 @@ export function describeInlineAgentSubagentSpawnResult(
 
   if (result.ok) {
     // Consume the taught `<task_complete>` signal out of the deliverable
-    // (Defect 4, 2026-09-18): the machine wrapper must never leak into the
-    // parent's tool result or the console row. The normalizer replaces the
-    // wrapper with its parsed summary, falls back to the inner text when no
-    // summary exists (and on malformed JSON), and passes wrapper-free text
-    // through unchanged.
-    const deliverable = normalizeInlineAgentFinalAnswerText(result.finalText);
+    // (Defect 4 + O2, 2026-09-19): the machine wrapper must never leak into
+    // the parent's tool result or the console row. When the signal carries a
+    // summary, that summary IS the deliverable - the surrounding text is not
+    // appended a second time. A block without a usable summary (and a
+    // malformed block) degrades to the text minus the wrapper tags; the
+    // inner text is kept so nothing but the control tags disappears.
+    let summary = '';
+    const strippedBody = result.finalText.replace(
+      TASK_COMPLETE_BLOCK_RE,
+      (_match: string, inner: string) => {
+        if (summary) return '';
+        try {
+          const parsed = JSON.parse(inner) as { summary?: unknown };
+          if (typeof parsed.summary === 'string' && parsed.summary.trim()) {
+            summary = parsed.summary.trim();
+            return '';
+          }
+        } catch {
+          // malformed JSON: keep the inner text, drop only the tags
+        }
+        return inner;
+      },
+    );
+    const deliverable = (summary || strippedBody).trim();
     return {
       ok: true,
-      summary: deliverable || translate(locale, 'content.agent.subagentNoFinalText'),
+      summary:
+        stripDanglingLeadingPunctuation(deliverable)
+        || translate(locale, 'content.agent.subagentNoFinalText'),
       detail: statusDetail,
     };
   }

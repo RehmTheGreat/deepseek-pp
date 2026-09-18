@@ -297,7 +297,7 @@ describe('spawn result to tool-result mapping (M4 wiring note 4)', () => {
     expect(described.summary.length).toBeGreaterThan(0);
   });
 
-  it('consumes the task_complete signal: deliverable kept, wrapper replaced by the summary', () => {
+  it('consumes the task_complete signal: the summary IS the deliverable, stated once', () => {
     const described = describeInlineAgentSubagentSpawnResult('en', {
       ok: true,
       refused: false,
@@ -319,8 +319,9 @@ describe('spawn result to tool-result mapping (M4 wiring note 4)', () => {
     expect(described.summary).not.toContain('<task_complete>');
     expect(described.summary).not.toContain('</task_complete>');
     expect(described.summary).not.toContain('"summary"');
-    expect(described.summary).toContain('Soft rain on the roof');
-    expect(described.summary).toContain('Wrote a single 5-7-5 haiku about rain.');
+    // O2 contract: the summary IS the deliverable - it is stated exactly
+    // once and the full text is not appended a second time.
+    expect(described.summary).toBe('Wrote a single 5-7-5 haiku about rain.');
   });
 
   it('a wrapper-only final text becomes the clean summary deliverable', () => {
