@@ -559,6 +559,16 @@ let inlineAgentCurrentStep: HTMLElement | null = null;
 let inlineAgentLoopId: string | null = null;
 let inlineAgentContainerObserver: MutationObserver | null = null;
 let renderedToolCallCleanerFrame: number | null = null;
+/**
+ * Bounded diagnostic for the rendered-tool-call scrubber (renderer-crash
+ * containment, 2026-09-18): the first failures are logged, an error storm is
+ * not. A content script must never let a single malformed stream fragment
+ * cascade into an unhandled-throw loop.
+ */
+const SCRUBBER_ERROR_LOG_LIMIT = 5;
+let scrubberErrorLogCount = 0;
+/** Marker for page-owned containers the scrubber hid instead of removed. */
+const PRUNED_TOOL_CONTAINER_MARKER = "data-dpp-pruned-empty";
 let activeInlineAgentTrace: InlineAgentTraceRecord | null = null;
 let inlineAgentTraceWriteTimer: ReturnType<typeof setTimeout> | null = null;
 let inlineAgentStreamRenderFrame: number | null = null;
@@ -1112,6 +1122,7 @@ async function stopToolCapability(): Promise<void> {
   toolCapabilityEpoch += 1;
   toolBlockRouteKey = "";
   stopRenderedToolCallCleaner();
+  resetPrunedToolContainers();
   finishActivePermissionRequest(false);
   const errors: unknown[] = [];
   pendingToolAuthorizationCorrelations.terminateAll();
@@ -8631,8 +8642,21 @@ function hasLikelyToolMarkerPrefix(text: string): boolean {
 function cleanRenderedToolCalls() {
   const roots = getToolCleanupRoots();
   for (const root of roots) {
-    hideInlineAgentContinuationMessages(root);
-    stripToolCallTextNodes(root);
+    try {
+      hideInlineAgentContinuationMessages(root);
+      stripToolCallTextNodes(root);
+    } catch (error) {
+      // Containment (renderer-crash class, 2026-09-18): one malformed stream
+      // fragment must never take the page down through the cleanup loop. The
+      // diagnostic is bounded so an error storm cannot flood the console.
+      if (scrubberErrorLogCount < SCRUBBER_ERROR_LOG_LIMIT) {
+        scrubberErrorLogCount += 1;
+        console.warn(
+          "[DeepSeek++] rendered tool-call cleanup skipped a message:",
+          error,
+        );
+      }
+    }
   }
 }
 
@@ -8939,12 +8963,29 @@ function pruneEmptyToolContainers(start: HTMLElement, boundary: Element) {
     );
 
     if (!hasVisibleText && !hasProtectedChild) {
-      el.remove();
+      // Containment (renderer-crash class, 2026-09-18): never REMOVE a
+      // React-owned element. Deleting nodes the page's reconciler still holds
+      // crashes the whole tree into DeepSeek's "crashed due to modifications
+      // made by certain browser extensions" boundary (removeChild
+      // NotFoundError). Hiding is visually identical for an emptied wrapper,
+      // leaves the tree shape intact, and is undone on capability stop.
+      el.setAttribute(PRUNED_TOOL_CONTAINER_MARKER, "true");
+      el.style.display = "none";
       el = parent;
       continue;
     }
 
     el = parent;
+  }
+}
+
+/** Undoes prune hiding so capability teardown leaves no residue. */
+function resetPrunedToolContainers(): void {
+  for (const element of document.querySelectorAll<HTMLElement>(
+    `[${PRUNED_TOOL_CONTAINER_MARKER}]`,
+  )) {
+    element.style.removeProperty("display");
+    element.removeAttribute(PRUNED_TOOL_CONTAINER_MARKER);
   }
 }
 
