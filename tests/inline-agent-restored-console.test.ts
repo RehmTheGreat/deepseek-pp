@@ -84,9 +84,9 @@ describe('restored inline-agent console (source contracts, content entrypoint pa
     const mountFn = afterMarker('function mountRestoredInlineAgentContainer(')
       .split('\nfunction ')[0];
     expect(mountFn).toContain(
-      'applyRestoredBodyFontSize(container, measureRestoredHostFontSize(message))',
+      'applyAgentBodyFontSize(container, measureHostBodyFontSize(message))',
     );
-    const measureFn = afterMarker('function measureRestoredHostFontSize(')
+    const measureFn = afterMarker('function measureHostBodyFontSize(')
       .split('\nfunction ')[0];
     expect(measureFn).toContain('window.getComputedStyle(element).fontSize');
     expect(measureFn).toContain('document.body');

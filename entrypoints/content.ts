@@ -143,7 +143,7 @@ import {
   createAgentStepElement,
   mountAgentNarration,
   mountRestoredAgentStep,
-  applyRestoredBodyFontSize,
+  applyAgentBodyFontSize,
   updateStepStreamText,
   updateStepStatus,
   updateAgentReasoningNoteElement,
@@ -4022,7 +4022,7 @@ function injectContentToastStyles(): void {
       border-radius: 10px;
       background: rgba(30, 32, 40, 0.95);
       color: #fff;
-      font-size: 13px;
+      font-size: var(--dpp-ui-font-chrome, 12px);
       line-height: 1.45;
       box-shadow: 0 8px 28px rgba(0, 0, 0, 0.28);
       z-index: 2147483646;
@@ -4113,7 +4113,7 @@ function injectConversationExportActionStyles() {
       background: rgba(255, 255, 255, 0.98);
       box-shadow: 0 16px 38px rgba(15, 23, 42, 0.18);
       color: #111827;
-      font-size: 13px;
+      font-size: var(--dpp-ui-font-chrome, 12px);
       line-height: 1.35;
     }
     .${EXPORT_ACTION_MENU_CLASS} form {
@@ -4122,7 +4122,7 @@ function injectConversationExportActionStyles() {
     .${EXPORT_ACTION_MENU_CLASS} .dpp-export-menu-title {
       margin: 0 0 8px;
       color: #475569;
-      font-size: 12px;
+      font-size: var(--dpp-ui-font-chrome, 12px);
       font-weight: 600;
     }
     .${EXPORT_ACTION_MENU_CLASS} .dpp-export-menu-option {
@@ -4186,7 +4186,7 @@ function injectConversationExportActionStyles() {
       background: rgba(255, 255, 255, 0.96);
       box-shadow: 0 12px 32px rgba(15, 23, 42, 0.16);
       color: #111827;
-      font-size: 13px;
+      font-size: var(--dpp-ui-font-chrome, 12px);
       line-height: 1.45;
       opacity: 0;
       pointer-events: none;
@@ -5185,6 +5185,10 @@ function mountInlineAgentContainer(
   };
 
   placeContainer();
+  // Unified type scale (Defect 5): in-run and restored containers share ONE
+  // content size - the host page's measured body size, published as
+  // --dpp-ui-font-body. A failed measurement is a no-op (CSS fallback).
+  applyAgentBodyFontSize(container, measureHostBodyFontSize(message));
 
   inlineAgentContainerObserver?.disconnect();
   inlineAgentContainerObserver = new MutationObserver(placeContainer);
@@ -8035,7 +8039,7 @@ function injectPermissionBannerStyles() {
       border-radius: 8px;
       border: 1px solid var(--dpp-ui-border);
       font: inherit;
-      font-size: 12px;
+      font-size: var(--dpp-ui-font-chrome, 12px);
       font-weight: 500;
       cursor: pointer;
       transition: all 0.15s ease;
@@ -8335,14 +8339,11 @@ function mountRestoredInlineAgentContainer(
   adoptMessageReasoningBlocks(message);
   const host = getAssistantResponseHost(message);
   host.appendChild(container);
-  // Post-run visibility parity: console-rendered narration (the runs whose
-  // final turn the native page does NOT own - official-api, budget-paused and
-  // tool-bearing last steps) must read at the native message's size, not the
-  // in-run 14px. The measured size is published on the restored container as
-  // an inline custom property; a failed measurement is a no-op and the CSS
-  // fallback keeps 14px. In-run containers never carry data-restored, so
-  // their typography is untouched.
-  applyRestoredBodyFontSize(container, measureRestoredHostFontSize(message));
+  // Unified type scale (Defect 5): the measured native body size is
+  // published on the container as --dpp-ui-font-body; the same mechanism runs
+  // for in-run mounts, so in-run and restored narration always share one
+  // size. A failed measurement is a no-op and the CSS fallback keeps 14px.
+  applyAgentBodyFontSize(container, measureHostBodyFontSize(message));
 }
 
 /**
@@ -8352,7 +8353,7 @@ function mountRestoredInlineAgentContainer(
  * px, so an empty reading is the only realistic failure here; value
  * validation lives in resolveRestoredBodyFontSize.
  */
-function measureRestoredHostFontSize(message: Element | null): string | null {
+function measureHostBodyFontSize(message: Element | null): string | null {
   for (const element of [message, document.body]) {
     if (!element) continue;
     const size = window.getComputedStyle(element).fontSize;
@@ -9718,7 +9719,7 @@ function injectPetStyles() {
       box-shadow: 0 8px 18px rgba(39, 78, 180, 0.18);
       color: #1d2433;
       font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', 'PingFang SC', 'Microsoft YaHei', sans-serif;
-      font-size: 13px;
+      font-size: var(--dpp-ui-font-chrome, 12px);
       font-weight: 500;
       line-height: 1.4;
       letter-spacing: 0.2px;

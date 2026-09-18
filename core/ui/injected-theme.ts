@@ -34,6 +34,7 @@ export function injectInjectedThemeStyles(): void {
   // Keep both files in sync when tuning values.
   style.textContent = `
 body {
+  --dpp-ui-font-chrome: 12px;
   --dpp-ui-surface:      oklch(0.998 0.002 264);
   --dpp-ui-surface-muted: oklch(0.965 0.005 264);
   --dpp-ui-surface-hover: oklch(0.95 0.006 264);
@@ -56,6 +57,7 @@ body {
 }
 
 body.dpp-theme-dark {
+  --dpp-ui-font-chrome: 12px;
   --dpp-ui-surface:      oklch(0.22 0.014 264);
   --dpp-ui-surface-muted: oklch(0.25 0.014 264);
   --dpp-ui-surface-hover: oklch(0.29 0.015 264);

@@ -97,7 +97,7 @@ export function injectInlineAgentStyles(): void {
       align-items: center;
       gap: 6px;
       padding: 2px 0;
-      font-size: 12px;
+      font-size: var(--dpp-ui-font-chrome);
       line-height: 1.5;
       color: var(--dpp-ui-text-muted);
     }
@@ -139,7 +139,7 @@ export function injectInlineAgentStyles(): void {
     .dpp-agent-stop-btn {
       flex: none;
       padding: 2px 9px;
-      font-size: 12px;
+      font-size: var(--dpp-ui-font-chrome);
       border: 1px solid var(--dpp-ui-error);
       border-radius: 6px;
       background: transparent;
@@ -160,21 +160,16 @@ export function injectInlineAgentStyles(): void {
     .dpp-agent-narration {
       margin: 4px 0 6px;
     }
+    /* Content type scale (Defect 5): narration renders at the host page's
+       measured body size, published per container as --dpp-ui-font-body by
+       applyAgentBodyFontSize (in-run AND restored mounts), with the 14px
+       fallback keeping today's size when measurement failed. One rule, one
+       size: no restored-mode override, no hardcoded step. */
     .dpp-agent-step-body {
-      font-size: 14px;
+      font-size: var(--dpp-ui-font-body, 14px);
       line-height: 1.7;
       color: var(--dpp-ui-text);
       word-break: break-word;
-    }
-    /* Post-run visibility parity: a RESTORED console (mounted after the
-       completed-run page reload) narrates at the host page's measured body
-       size instead of the in-run 14px — the size the native history around it
-       renders at. The container carries the measurement as an inline custom
-       property (applyRestoredBodyFontSize); without a measurement the fallback
-       keeps the in-run size. Scoped to [data-restored="true"], so in-run
-       rendering always stays at the base rule above. */
-    .dpp-agent-container[data-restored="true"] .dpp-agent-step-body {
-      font-size: var(--dpp-restored-body-font-size, 14px);
     }
     .dpp-agent-step-body:empty {
       display: none;
@@ -227,7 +222,7 @@ export function injectInlineAgentStyles(): void {
       width: 100%;
       margin: 8px 0;
       border-collapse: collapse;
-      font-size: 12px;
+      font-size: var(--dpp-ui-font-chrome);
     }
     .dpp-agent-step-body th,
     .dpp-agent-step-body td {
@@ -252,7 +247,7 @@ export function injectInlineAgentStyles(): void {
       padding: 2px 0;
       border: none;
       background: transparent;
-      font-size: 12px;
+      font-size: var(--dpp-ui-font-chrome);
       color: var(--dpp-ui-text-muted);
       cursor: pointer;
       user-select: none;
@@ -313,7 +308,7 @@ export function injectInlineAgentStyles(): void {
       padding: 1px 0;
       border: none;
       background: transparent;
-      font-size: 12px;
+      font-size: var(--dpp-ui-font-chrome);
       color: var(--dpp-ui-text-muted);
       cursor: pointer;
       user-select: none;
@@ -367,7 +362,7 @@ export function injectInlineAgentStyles(): void {
     }
     .dpp-agent-tool-state {
       flex: none;
-      font-size: 11px;
+      font-size: var(--dpp-ui-font-chrome);
       color: var(--dpp-ui-text-subtle);
     }
     .dpp-agent-tool-chevron {
@@ -386,7 +381,7 @@ export function injectInlineAgentStyles(): void {
     }
     .dpp-agent-tool-summary {
       padding: 2px 0 4px 18px;
-      font-size: 12px;
+      font-size: var(--dpp-ui-font-chrome);
       line-height: 1.5;
       color: var(--dpp-ui-text-muted);
       white-space: pre-wrap;
@@ -418,7 +413,7 @@ export function injectInlineAgentStyles(): void {
     .dpp-agent-notice {
       margin: 4px 0;
       padding: 4px 8px;
-      font-size: 12px;
+      font-size: var(--dpp-ui-font-chrome);
       line-height: 1.5;
       color: var(--dpp-ui-text-muted);
       white-space: pre-wrap;
@@ -432,7 +427,7 @@ export function injectInlineAgentStyles(): void {
     }
     .dpp-agent-refused-record-header {
       padding: 2px 0;
-      font-size: 12px;
+      font-size: var(--dpp-ui-font-chrome);
       line-height: 1.5;
       color: var(--dpp-ui-text-muted);
       white-space: pre-wrap;
@@ -448,7 +443,7 @@ export function injectInlineAgentStyles(): void {
       gap: 6px;
       width: 100%;
       padding: 1px 0;
-      font-size: 12px;
+      font-size: var(--dpp-ui-font-chrome);
       color: var(--dpp-ui-text-muted);
     }
     .dpp-agent-reasoning-note-toggle {
@@ -459,7 +454,7 @@ export function injectInlineAgentStyles(): void {
       padding: 2px 0;
       border: none;
       background: transparent;
-      font-size: 12px;
+      font-size: var(--dpp-ui-font-chrome);
       color: var(--dpp-ui-text-muted);
       cursor: pointer;
       user-select: none;
@@ -501,7 +496,7 @@ export function injectInlineAgentStyles(): void {
     }
     .dpp-agent-reasoning-note-body {
       padding: 2px 0 4px 18px;
-      font-size: 12px;
+      font-size: var(--dpp-ui-font-chrome);
       line-height: 1.5;
       color: var(--dpp-ui-text-muted);
       white-space: pre-wrap;
@@ -514,7 +509,7 @@ export function injectInlineAgentStyles(): void {
       align-items: center;
       gap: 8px;
       padding: 6px 0;
-      font-size: 13px;
+      font-size: var(--dpp-ui-font-chrome);
       color: var(--dpp-ui-text-muted);
     }
     /* Incremental code-run support (non-native languages only): DeepSeek owns
@@ -530,7 +525,7 @@ export function injectInlineAgentStyles(): void {
     }
     .dpp-agent-code-run {
       padding: 2px 10px;
-      font-size: 12px;
+      font-size: var(--dpp-ui-font-chrome);
       line-height: 1.6;
       border: 1px solid var(--dpp-ui-border);
       border-radius: 6px;
@@ -557,7 +552,7 @@ export function injectInlineAgentStyles(): void {
       background: var(--dpp-ui-accent-panel);
       color: var(--dpp-ui-text-muted);
       font-family: 'SF Mono', Monaco, Menlo, Consolas, monospace;
-      font-size: 12px;
+      font-size: var(--dpp-ui-font-chrome);
       line-height: 1.45;
       white-space: pre-wrap;
       word-break: break-word;
@@ -591,7 +586,7 @@ export function injectInlineAgentStyles(): void {
       align-items: center;
       gap: 6px;
       padding: 2px 0;
-      font-size: 12px;
+      font-size: var(--dpp-ui-font-chrome);
       line-height: 1.5;
       color: var(--dpp-ui-text-muted);
     }
@@ -952,19 +947,20 @@ export function updateStepStatus(step: HTMLElement, status: string): void {
 // ---------------------------------------------------------------------------
 
 /**
- * Bounds for the host-measured body font size. Computed styles always resolve
- * to px, so anything non-numeric is a failed measurement; the bounds reject
- * garbage values (hidden-element "0px", absurd sizes) while accepting every
- * realistic page body size. Outside the bounds the CSS fallback (14px) wins.
+ * Bounds for the host-measured body font size (the agent content scale,
+ * Defect 5). Computed styles always resolve to px, so anything non-numeric is
+ * a failed measurement; the bounds reject garbage values (hidden-element
+ * "0px", absurd sizes) while accepting every realistic page body size.
+ * Outside the bounds the CSS fallback (14px) wins.
  */
-const RESTORED_BODY_FONT_SIZE_MIN_PX = 8;
-const RESTORED_BODY_FONT_SIZE_MAX_PX = 72;
+const HOST_BODY_FONT_SIZE_MIN_PX = 8;
+const HOST_BODY_FONT_SIZE_MAX_PX = 72;
 
 /**
  * Validates a measured CSS font-size string ("16px", "15.5px") and returns the
  * normalized px value, or null when the measurement failed.
  */
-export function resolveRestoredBodyFontSize(
+export function resolveHostBodyFontSize(
   measured: string | null | undefined,
 ): string | null {
   const match = /^(\d+(?:\.\d+)?)px$/.exec((measured ?? '').trim());
@@ -972,8 +968,8 @@ export function resolveRestoredBodyFontSize(
   const value = Number(match[1]);
   if (
     !Number.isFinite(value) ||
-    value < RESTORED_BODY_FONT_SIZE_MIN_PX ||
-    value > RESTORED_BODY_FONT_SIZE_MAX_PX
+    value < HOST_BODY_FONT_SIZE_MIN_PX ||
+    value > HOST_BODY_FONT_SIZE_MAX_PX
   ) {
     return null;
   }
@@ -981,17 +977,18 @@ export function resolveRestoredBodyFontSize(
 }
 
 /**
- * Publishes the measured host body font size on a restored container as an
- * inline custom property consumed by the restored-mode CSS rule. A failed
- * measurement is a no-op: the rule's 14px fallback keeps today's size.
+ * Publishes the measured host body font size on an agent container (in-run or
+ * restored) as the inline custom property consumed by the content CSS rule.
+ * A failed measurement is a no-op: the rule's 14px fallback keeps today's
+ * size.
  */
-export function applyRestoredBodyFontSize(
+export function applyAgentBodyFontSize(
   container: HTMLElement,
   measured: string | null | undefined,
 ): void {
-  const size = resolveRestoredBodyFontSize(measured);
+  const size = resolveHostBodyFontSize(measured);
   if (!size) return;
-  container.style.setProperty('--dpp-restored-body-font-size', size);
+  container.style.setProperty('--dpp-ui-font-body', size);
 }
 
 /**

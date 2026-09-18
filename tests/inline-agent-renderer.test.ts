@@ -2,7 +2,7 @@ import { afterEach, describe, expect, it, vi } from 'vitest';
 import {
   addAgentToolEntry,
   adoptReasoningBlock,
-  applyRestoredBodyFontSize,
+  applyAgentBodyFontSize,
   appendAgentConsoleNotice,
   autoCollapseCompletedReasoningHost,
   collapseAllAgentToolGroups,
@@ -23,7 +23,7 @@ import {
   updateAgentReasoningNoteElement,
   renderAgentStreamText,
   resolveAgentToolEntry,
-  resolveRestoredBodyFontSize,
+  resolveHostBodyFontSize,
   updateAgentConsoleHeader,
   updateStepStatus,
   updateStepStreamText,
@@ -1179,48 +1179,45 @@ describe('restored agent console rendering (post-reload visibility parity)', () 
     expect(settled.getAttribute('data-status')).toBe('error');
   });
 
-  it('applies the measured host body font size as the restored custom property', () => {
+  it('applies the measured host body font size as the shared body custom property', () => {
     const container = createAgentContainer();
-    container.setAttribute('data-restored', 'true');
 
-    applyRestoredBodyFontSize(container, '16px');
-    expect(container.style.getPropertyValue('--dpp-restored-body-font-size')).toBe('16px');
+    applyAgentBodyFontSize(container, '16px');
+    expect(container.style.getPropertyValue('--dpp-ui-font-body')).toBe('16px');
 
     // A later measurement replaces the property (DeepSeek can re-render with a
     // different zoom/font before the console mounts).
-    applyRestoredBodyFontSize(container, ' 15.5px ');
-    expect(container.style.getPropertyValue('--dpp-restored-body-font-size')).toBe('15.5px');
+    applyAgentBodyFontSize(container, ' 15.5px ');
+    expect(container.style.getPropertyValue('--dpp-ui-font-body')).toBe('15.5px');
 
-    expect(resolveRestoredBodyFontSize('14px')).toBe('14px');
+    expect(resolveHostBodyFontSize('14px')).toBe('14px');
   });
 
   it('treats failed measurements as no-ops so the CSS fallback (14px) applies', () => {
     const container = createAgentContainer();
 
     for (const bad of [null, undefined, '', '   ', '16', 'larger', '0px', '-3px', '200px', '16rem']) {
-      applyRestoredBodyFontSize(container, bad);
-      expect(container.getAttribute('style') ?? '').not.toContain('--dpp-restored-body-font-size');
+      applyAgentBodyFontSize(container, bad);
+      expect(container.getAttribute('style') ?? '').not.toContain('--dpp-ui-font-body');
     }
 
-    expect(resolveRestoredBodyFontSize('16px')).toBe('16px');
-    expect(resolveRestoredBodyFontSize(null)).toBeNull();
-    expect(resolveRestoredBodyFontSize('0px')).toBeNull();
-    expect(resolveRestoredBodyFontSize('96px')).toBeNull();
+    expect(resolveHostBodyFontSize('16px')).toBe('16px');
+    expect(resolveHostBodyFontSize(null)).toBeNull();
+    expect(resolveHostBodyFontSize('0px')).toBeNull();
+    expect(resolveHostBodyFontSize('96px')).toBeNull();
   });
 
-  it('scopes the restored font-size override to data-restored containers and keeps in-run at 14px', () => {
+  it('renders content at one measured body size for in-run and restored containers', () => {
     injectInlineAgentStyles();
     const css = document.getElementById('dpp-inline-agent-css')?.textContent ?? '';
 
-    // In-run base rule stays at 14px and never consumes the restored property.
+    // One body rule consuming the shared measured token with the 14px
+    // fallback; no restored-only override and no hardcoded px step.
     const baseRule = css.match(/\.dpp-agent-step-body\s*\{[^}]*\}/)?.[0] ?? '';
-    expect(baseRule).toContain('font-size: 14px');
-    expect(baseRule).not.toContain('var(--dpp-restored-body-font-size');
-
-    // Restored override: scoped under the restored container attribute, with
-    // the measured property and a 14px fallback when measurement failed.
-    expect(css).toContain('.dpp-agent-container[data-restored="true"] .dpp-agent-step-body');
-    expect(css).toContain('font-size: var(--dpp-restored-body-font-size, 14px)');
+    expect(baseRule).toContain('font-size: var(--dpp-ui-font-body, 14px)');
+    expect(css).not.toContain('[data-restored="true"] .dpp-agent-step-body');
+    expect(css).not.toContain('font-size: 14px');
+    expect(css).not.toContain('--dpp-restored-body-font-size');
   });
 });
 
