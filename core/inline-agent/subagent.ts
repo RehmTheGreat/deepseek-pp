@@ -55,6 +55,10 @@ import {
   INLINE_AGENT_TOOL_CALL_TIMEOUT_MS,
 } from './types';
 import type { SupportedLocale } from '../i18n';
+import {
+  createToolInvocationCatalog,
+  getToolInvocationNames,
+} from '../tool/invocation';
 import type { ToolDescriptor } from '../types';
 
 /**
@@ -530,6 +534,14 @@ export function createInlineAgentSubagentRunner(
  * regardless of any hint), intersected with the advisory
  * `toolAllowlistHint` when one is present (least privilege); unknown hint
  * names are ignored.
+ *
+ * Hint identity (spawn-quality diagnosis §4.1): the model only ever sees
+ * ADVERTISED invocation names, so the hint is matched against the full
+ * invocation-name set of each descriptor (`getToolInvocationNames`: the
+ * unique short `name` plus the raw `invocationName`), never the raw field
+ * alone. For MCP-origin tools the raw field is the prefixed
+ * `mcp_<sanitized-serverId>_<toolName>` form; matching only it silently
+ * emptied every hint-narrowed child's toolset.
  */
 export function deriveChildToolDescriptors(
   available: readonly ToolDescriptor[],
@@ -540,7 +552,10 @@ export function deriveChildToolDescriptors(
   );
   if (!toolAllowlistHint || toolAllowlistHint.length === 0) return [...pool];
   const allowed = new Set(toolAllowlistHint);
-  return pool.filter((descriptor) => allowed.has(descriptor.invocationName));
+  const catalog = createToolInvocationCatalog(pool);
+  return pool.filter((descriptor) =>
+    getToolInvocationNames(descriptor, catalog).some((name) => allowed.has(name)),
+  );
 }
 
 /**

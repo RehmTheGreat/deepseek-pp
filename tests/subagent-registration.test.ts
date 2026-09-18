@@ -125,6 +125,34 @@ describe('subagent spawn descriptor registration (M5)', () => {
     ).toBe(false);
   });
 
+  it('matches a toolAllowlistHint against the ADVERTISED invocation-name set, not the raw field', () => {
+    // Hint identity fix (spawn-quality diagnosis §4.1): every MCP-origin
+    // descriptor's raw `invocationName` is the prefixed form
+    // `mcp_<sanitized-serverId>_<toolName>` while the model is only ever
+    // shown the advertised short `name` (unique across the catalog). A hint
+    // like `shell_exec` must therefore select the MCP-shaped descriptor —
+    // matching only the raw field silently emptied every hint-narrowed child.
+    const mcpShaped: ToolDescriptor = {
+      ...descriptor('mcp_shell_local_shell_exec'),
+      name: 'shell_exec',
+    };
+    const pool = [mcpShaped, descriptor('web_search')];
+
+    // Hint by the ADVERTISED short name selects the MCP-shaped descriptor.
+    expect(
+      deriveChildToolDescriptors(pool, ['shell_exec']).map((item) => item.name),
+    ).toEqual(['shell_exec']);
+    // Hint by the raw invocation name still selects it (both are legal).
+    expect(
+      deriveChildToolDescriptors(pool, ['mcp_shell_local_shell_exec']).map((item) => item.name),
+    ).toEqual(['shell_exec']);
+    // Unknown hint names are still ignored (least privilege) — only the
+    // unknown ones: a partially-known hint narrows to what it names.
+    expect(deriveChildToolDescriptors(pool, ['shell_exec', 'no_such_tool'])).toHaveLength(1);
+    // A hint naming nothing real still yields an empty set (unchanged).
+    expect(deriveChildToolDescriptors(pool, ['no_such_tool'])).toEqual([]);
+  });
+
   it('recognizes spawn calls by invocation name or canonical name only', () => {
     expect(isInlineAgentSubagentSpawnCall({ name: 'subagent_spawn', invocationName: 'subagent_spawn' })).toBe(true);
     expect(isInlineAgentSubagentSpawnCall({ name: 'subagent_spawn' })).toBe(true);
