@@ -368,6 +368,22 @@ export function extractResponseTextFromParsed(parsed: any): string | null {
       .join('');
     return text.length > 0 ? text : null;
   }
+  // Format 5: {"v":{"response":{"fragments":[{...,content:"..."}]}}} - the
+  // ready/bootstrap snapshot. DeepSeek embeds the first fragment(s) WITH
+  // their first content chunk here instead of sending regular patches, so a
+  // turn whose very first output byte is a tool-call open tag (`<`) delivers
+  // that byte ONLY through this shape. Without this branch the leading bytes
+  // never reach the tool-call parser or the page stream filter and the whole
+  // turn-0 call is silently dropped (live capture 2026-09-18,
+  // .superpowers/sdd/e2e-live/turn0-drop-diagnosis.md).
+  const snapshotFragments = getSnapshotFragments(parsed);
+  if (snapshotFragments) {
+    const text = snapshotFragments
+      .map((frag: unknown) => extractFragmentText(frag))
+      .filter((part: string | null): part is string => part !== null)
+      .join('');
+    return text.length > 0 ? text : null;
+  }
   return null;
 }
 
