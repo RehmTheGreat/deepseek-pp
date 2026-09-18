@@ -418,7 +418,7 @@ function findXmlToolBlocks(
  * DSML tool blocks (linear scan) via the shared generalized claim scanner
  * (`findNextDsmlToolBlock`, core/interceptor/dsml-delimiters.ts): both
  * wrapper names, wrapperless invoke blocks, any bar shape 1..8, tolerated
- * whitespace, closers of ANY bar shape, unclosed openers claiming to EOF —
+ * whitespace, closers of ANY bar shape, unclosed openers claiming to EOF -
  * mirroring the tool-parser extraction claims exactly so the history strip
  * removes exactly what the parsers recognize, no more, no less.
  */
@@ -458,7 +458,7 @@ function findLegacyInvocationNames(
   while (searchFrom < end) {
     // Generalized invoke scan: every delimiter shape, whitespace-tolerant
     // attribute form; the name value runs to the next double quote. No
-    // payload parse — the >120K lightweight path keeps skipping extraction.
+    // payload parse - the >120K lightweight path keeps skipping extraction.
     const tag = findDsmlTag(
       text,
       searchFrom,

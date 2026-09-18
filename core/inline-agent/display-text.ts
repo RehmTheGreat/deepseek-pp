@@ -12,7 +12,7 @@ import type { ToolDescriptor } from '../types';
  * Display-layer answer extraction (Issue #551, pivoted by UI review): the
  * user-facing answer is the FULL final-turn reply text with the internal
  * `<task_complete>` control block stripped. Real deliverables live in the
- * reply body — a summary-only split hid them inside a collapsed step — so the
+ * reply body - a summary-only split hid them inside a collapsed step - so the
  * answer area always renders the complete body, never folded or truncated.
  * The signal summary remains a fallback for runs whose pre-signal text is
  * empty, so a malformed completion never hides the answer.
@@ -44,7 +44,7 @@ export function getInlineAgentProcessText(text: string): string {
 // copy/download/run code
 // blocks, native preview panel).
 //
-// Retirement contract — no silent swallow: artifact XML that still arrives
+// Retirement contract - no silent swallow: artifact XML that still arrives
 // from in-flight sessions (learned model behavior) is a retired internal
 // control protocol: it is stripped by {@link stripRetiredArtifactProtocolBlocks}
 // BEFORE the ordinary tool-call strip, so it can never surface as raw protocol
@@ -53,7 +53,7 @@ export function getInlineAgentProcessText(text: string): string {
 // deliverable (e.g. "now creating a report for you" without anything
 // renderable following) is nudged to re-deliver in a renderable form instead
 // of ending on an empty promise. `stripRetiredArtifactProtocolBlocks` only
-// ever removes artifact XML — fenced code blocks, plain text, and every other
+// ever removes artifact XML - fenced code blocks, plain text, and every other
 // tool tag pass through byte-for-byte (covered by tests).
 // ---------------------------------------------------------------------------
 
@@ -62,7 +62,7 @@ export const INLINE_AGENT_TRUNCATION_MARKER = '...[truncated]';
 /**
  * Removes the trailing truncation suffix from a display text so two texts of
  * the same origin (one clamped, one complete) can be compared. The suffix is
- * the `...[truncated]` marker, and — for legacy persisted texts — a trailing
+ * the `...[truncated]` marker, and - for legacy persisted texts - a trailing
  * fence line that an old salvage conversion emitted inside a closed fence.
  * Iterated so `content\n````\n...[truncated]` and `content\n...[truncated]`
  * (unclosed clamp cut) both normalize to `content`.
@@ -92,7 +92,7 @@ export function stripInlineAgentTruncationSuffix(text: string): string {
  * candidate sources (Issue #551 follow-up): the loop's resolved final text
  * `finalAnswer` and the last step's rendered text `lastStepText` (the same
  * final turn as it was streamed). When one is a prefix of the other they
- * provably share an origin and the longer one is the complete reply — traces
+ * provably share an origin and the longer one is the complete reply - traces
  * persisted by older builds stored a summary/prefix as `finalText` while the
  * full reply (e.g. a generated HTML document) only survived in the last step.
  * Unrelated texts keep `finalAnswer` (budget notices, legacy summary-split
@@ -157,7 +157,7 @@ export function summarizeInlineAgentToolParams(payload: unknown): string | null 
 
 /**
  * The user-facing final text: retired artifact-protocol XML stripped first
- * (control channel — see module header), then tool-call XML of the active
+ * (control channel - see module header), then tool-call XML of the active
  * catalog, then the `<task_complete>` control block. The remaining markdown
  * body (plain fences) is what the native history renderer takes over on the
  * committed final web response.

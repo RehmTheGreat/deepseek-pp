@@ -7,7 +7,7 @@
  *
  * 1. Extension-injected UI (agent console timeline, final-answer area) lives
  *    inside the host message, so naive `textContent` matching let a message
- *    that already hosts a console match nearly every follow-up run — the new
+ *    that already hosts a console match nearly every follow-up run - the new
  *    console then mounted under the PREVIOUS run's message.
  * 2. First-match-wins scanning preferred the oldest message; a new run's
  *    anchor is always the most recent one.
@@ -123,7 +123,7 @@ export interface InlineAgentRestoreAnchor {
  * index captured at run time (`anchorMessageIndex`) or a global assistant
  * ordinal from history metadata (`assistantMessageIndex`) points at the WRONG
  * message once the window moves. Restored consoles anchored through such
- * indices mounted under unrelated newer messages — a restored run's console
+ * indices mounted under unrelated newer messages - a restored run's console
  * appeared inside the newest reply.
  *
  * Anchoring therefore trusts only identity signals: the DOM message id and

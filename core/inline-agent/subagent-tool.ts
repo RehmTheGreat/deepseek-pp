@@ -1,5 +1,5 @@
 /**
- * P1 subagent spawn TOOL surface (M5) — the registration and mapping half of
+ * P1 subagent spawn TOOL surface (M5) - the registration and mapping half of
  * the subagent feature. Pure module: no DOM, no storage, no entrypoint
  * imports (AGENTS.md contract rule).
  *
@@ -11,8 +11,8 @@
  *    every child descriptor set).
  *  - It is NOT part of the shared model-facing prompt catalog: manual chat,
  *    sidepanel, and automation prompts stay byte-identical. It enters exactly
- *    one surface — agent-run authorization grants (background
- *    `CREATE_TOOL_AUTHORIZATION` merges it for `trigger === 'agent_run'`) —
+ *    one surface - agent-run authorization grants (background
+ *    `CREATE_TOOL_AUTHORIZATION` merges it for `trigger === 'agent_run'`) -
  *    so the parent inline-agent loop can advertise it and execute it through
  *    the loop's authorized `executeTool` path.
  *  - Spawn EXECUTION is content-owned (the child loop needs the page session),
