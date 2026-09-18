@@ -158,4 +158,26 @@ describe('DSML total capture: live suppression of every variant (S3)', () => {
     const fused = createStreamingToolTextAccumulator(descriptors);
     expect(fused.append('a <｜DSMLcalls> b')).toBe('a <｜DSMLcalls> b');
   });
+  it('suppresses the pc variant at EVERY chunk-boundary split point (property loop)', () => {
+    // Task-review fix 3 (design §5 F-SPLIT): the exact live variant (bars
+    // doubled on both sides, space before the tag name, `calls` wrapper),
+    // split at EVERY index — the boundary can fall inside either bar run,
+    // the DSML token, the whitespace, or the tag name. At every split the
+    // cumulative visible text NEVER contains DSML bytes and the final flush
+    // is exactly the surrounding prose.
+    const block = [
+      '<｜｜DSML｜｜ calls>',
+      '<｜｜DSML｜｜ invoke name="x">body</｜｜DSML｜｜ invoke>',
+      '</｜｜DSML｜｜ calls>',
+    ].join('');
+    const full = `Answer ${block} done`;
+    for (let split = 1; split < full.length; split += 1) {
+      const stream = createStreamingToolTextAccumulator(descriptors);
+      const afterFirst = stream.append(full.slice(0, split));
+      const afterSecond = stream.append(full.slice(split));
+      expect(afterFirst, `first chunk at split ${split}`).not.toContain('DSML');
+      expect(afterSecond, `second chunk at split ${split}`).not.toContain('DSML');
+      expect(stream.flush(), `flush at split ${split}`).toBe('Answer  done');
+    }
+  });
 });

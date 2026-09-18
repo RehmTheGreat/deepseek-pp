@@ -406,4 +406,33 @@ describe('DSML total capture: generalized foreign terminators (S2)', () => {
     expect(second.failed).toHaveLength(1);
     expect(second.failed[0].parseError?.code).toBe('tool_call_close_mismatched');
   });
+  it('recognizes the generalized terminator at EVERY chunk-boundary split point (property loop)', () => {
+    // Task-review fix 3 (design §5 F-SPLIT): a representative generalized
+    // shape outside the old literal set on BOTH bar axes (3 left, 2 right),
+    // fed as two chunks split at EVERY index of the full text — the split can
+    // land inside the XML open, the payload, the bars, the DSML token, or the
+    // tag name; the terminator must bound the mismatched-close call and the
+    // following parallel call must still parse, at every single split.
+    const terminator = '</｜｜｜DSML｜｜invoke>';
+    const full = [
+      '<artifact_create>{"filename":"a.txt","content":"ok"}',
+      terminator,
+      '<artifact_create>{"filename":"b.txt"}</artifact_create>',
+    ].join('');
+    for (let split = 1; split < full.length; split += 1) {
+      const parser = createStreamingToolCallParser(descriptors);
+      const first = parser.append(full.slice(0, split));
+      const second = parser.append(full.slice(split));
+      const failed = [...first.failed, ...second.failed];
+      expect(failed, `split at ${split}`).toHaveLength(1);
+      expect(failed[0]?.parseError?.code, `split at ${split}`)
+        .toBe('tool_call_close_mismatched');
+      expect(failed[0]?.parseError?.message, `split at ${split}`)
+        .toContain('</｜DSML｜invoke>');
+      const completed = [...first.completed, ...second.completed];
+      expect(completed, `split at ${split}`).toHaveLength(1);
+      expect(completed[0], `split at ${split}`)
+        .toMatchObject({ invocationName: 'artifact_create' });
+    }
+  });
 });
