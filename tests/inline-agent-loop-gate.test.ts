@@ -64,7 +64,7 @@ describe('selectStartableToolExecutions (fresh-loop gate policy)', () => {
     expect(selectStartableToolExecutions(executions)).toEqual(executions);
   });
 
-  it('any completed execution starts the loop — there is no continuable-subset policy', () => {
+  it('any completed execution starts the loop - there is no continuable-subset policy', () => {
     // The old policy kept only MCP/web/browser/memory tools; an opaque local
     // tool now owns its presentation in the loop exactly like the rest.
     const executions = [
@@ -118,7 +118,7 @@ describe('selectStartableToolExecutions (fresh-loop gate policy)', () => {
   it('a pending subagent_spawn seed IS loop-starting (deferred first-turn spawn)', () => {
     // First-turn subagent access (pc directive 3): a parsed subagent_spawn
     // call on the NATIVE trigger turn is deferred into the loop as a pending
-    // seed — it has not executed yet, but it is BY DESIGN the loop's step 0,
+    // seed - it has not executed yet, but it is BY DESIGN the loop's step 0,
     // so the gate must treat it as loop-starting. A first turn whose ONLY
     // tool call is the deferred spawn starts the loop instead of vanishing.
     const seed = makeExecution({ pending: true, name: 'subagent_spawn' });
@@ -181,7 +181,7 @@ describe('content-script wiring of the loop gate (source contract)', () => {
     // First-turn subagent access (pc directive 3): runToolExecution intercepts
     // the spawn call BEFORE the background manual path, seeds it into the turn
     // (the gate's loop-starting pending record), and hands the CALL itself to
-    // the loop payload — the loop's step 0 executes it through the authorized
+    // the loop payload - the loop's step 0 executes it through the authorized
     // agent_run executor. A first-turn spawn must NEVER execute outside that
     // path.
     const runTool = contentSource.indexOf('function runToolExecution(');
@@ -201,7 +201,7 @@ describe('content-script wiring of the loop gate (source contract)', () => {
     // Review fix (task review 2026-09-18): runToolExecution must HONOR
     // deferFirstTurnSpawnCallToLoop's boolean. When the defer fails (the call
     // has no source.requestId), the call FALLS THROUGH to the normal manual
-    // execution path below — a grant-less spawn call fails closed there with
+    // execution path below - a grant-less spawn call fails closed there with
     // a structured error. The ok-true "Queued" card may only ever be returned
     // from INSIDE the successful-defer guard; a silent drop behind a fake-ok
     // card is exactly the failure mode this contract forbids.

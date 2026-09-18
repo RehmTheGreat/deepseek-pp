@@ -34,7 +34,7 @@ const MAX_DSML_TAG_ATTRIBUTE_CHARS = 512;
  * Longest partial-tag suffix the streaming holdback ever needs to keep:
  * `'</' + 8 bars + DSML + 8 bars + 8 ws + 'tool_calls'` = 2+8+4+8+8+10 = 40
  * code points; the cap keeps one code point of headroom (task-review fix 4:
- * the arithmetic was misstated as 41 — the bound itself is unchanged).
+ * the arithmetic was misstated as 41 - the bound itself is unchanged).
  */
 const MAX_DSML_PARTIAL_TAG_CHARS = 41;
 
@@ -234,7 +234,7 @@ export interface DsmlToolBlockRange {
   closed: boolean;
   /**
    * Canonical shape: single bars everywhere, no tolerated whitespace, and a
-   * `tool_calls` wrapper (C1) — i.e. normalizing the claimed slice is the
+   * `tool_calls` wrapper (C1) - i.e. normalizing the claimed slice is the
    * identity. Non-canonical blocks recover with the non-blocking
    * `tool_call_delimiter_corrected` annotation.
    */

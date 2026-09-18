@@ -585,7 +585,7 @@ interface InlineAgentChildConsoleState {
 const inlineAgentChildConsoles = new Map<string, InlineAgentChildConsoleState>();
 /**
  * Detected-but-unclaimed subagent_spawn tool rows in call order (review fix
- * 1: a FIFO array, never a single slot — two spawns detected in one step
+ * 1: a FIFO array, never a single slot - two spawns detected in one step
  * must each keep their own row). pi executes calls sequentially in the same
  * order, so the executor's shift() maps every child to ITS OWN row.
  */
@@ -4544,7 +4544,7 @@ async function startInlineAgentIfNeeded(
 
   // Mid-run user turn (P0.1 supersede, ruling R1): a real user turn arriving
   // while an inline-agent loop runs is never silently swallowed. When it can
-  // anchor a fresh loop it SUPERSEDES the running one — the old loop is
+  // anchor a fresh loop it SUPERSEDES the running one - the old loop is
   // aborted through the existing stop path with the supersede reason (honest
   // terminal trace status; the in-flight-only auto-resume can never resurrect
   // an aborted loop) and the fresh loop below starts on THIS turn's text,
@@ -4576,7 +4576,7 @@ async function startInlineAgentIfNeeded(
   }
 
   // EVERY completed tool execution of the turn starts (or seeds) the one
-  // structured loop — a shell_exec-only turn starts it exactly like a
+  // structured loop - a shell_exec-only turn starts it exactly like a
   // web_search one; there is no continuable-subset policy anymore. A pending
   // start (artifact streaming) is not an execution yet. A superseding user
   // turn starts its fresh loop even with none: the user's text is the new
@@ -4587,7 +4587,7 @@ async function startInlineAgentIfNeeded(
   // removed, a turn whose tools executed but that cannot anchor a fresh loop
   // would otherwise vanish silently. The executed work still shows: a small
   // persistent, NON-interactive record next to the turn's assistant message
-  // (in-DOM only — never persisted; the traces/data layer keeps the records).
+  // (in-DOM only - never persisted; the traces/data layer keeps the records).
   if (startableExecutions.length > 0 && !canAnchorFreshLoop(complete)) {
     mountRefusedToolTurnRecord(
       complete,
@@ -4629,7 +4629,7 @@ async function startInlineAgentIfNeeded(
     },
     // P1 subagent (M5): the spawn tool rides the agent-run grant and this
     // loop's model-facing descriptor set. It is NOT part of the shared prompt
-    // catalog — the background grant resolver merges the same descriptor for
+    // catalog - the background grant resolver merges the same descriptor for
     // agent_run grants (single factory truth in core/inline-agent/
     // subagent-tool.ts), and the engine's depth-1 filter excludes it from
     // every child descriptor set.
@@ -4724,7 +4724,7 @@ async function startInlineAgentIfNeeded(
 
   // The structured agent flow is the single tool-call presentation: the
   // trigger turn's executions render as the first NEW-style tool group inside
-  // the agent stream — the run reads as one flow. ALL completed first-turn
+  // the agent stream - the run reads as one flow. ALL completed first-turn
   // executions are shown (not only the continuable subset).
   const stream = getAgentConsoleBody(container);
   const initialExecutions = executions.filter(
@@ -4753,11 +4753,11 @@ async function startInlineAgentIfNeeded(
 /**
  * Mounts the refused tool-turn record (review fix F3) next to the turn's
  * assistant message: the i18n'd refusal header plus one read-only row per
- * executed tool. Best-effort and in-DOM only — when the message cannot be
+ * executed tool. Best-effort and in-DOM only - when the message cannot be
  * located the record is skipped (nothing is lost: the turn's executions live
  * on in the traces/data layer), and nothing is ever written to storage. The
  * record carries no controls, so it can never start or continue a loop, and
- * it is mounted ONLY from the two refusal paths above — never on a run that
+ * it is mounted ONLY from the two refusal paths above - never on a run that
  * actually starts.
  */
 function mountRefusedToolTurnRecord(
@@ -4837,7 +4837,7 @@ function resolveInlineAgentChainAnchor(
  * Review fix 2: the call first gets the SAME request identity every loop
  * tool carries (`ensureToolCallId` + the grant-bound `agent_run` source),
  * then its stable id claims one child run from the per-run claim set before
- * `runner.spawn` — a replayed or identity-less call id is refused with a
+ * `runner.spawn` - a replayed or identity-less call id is refused with a
  * structured result instead of executing a second child.
  */
 async function executeInlineAgentSubagentSpawn(input: {
@@ -4950,7 +4950,7 @@ function handleInlineAgentChildLoopEvent(
     typeof msg?.loopId === "string" ? msg.loopId : "";
   if (!childLoopId.startsWith(INLINE_AGENT_SUBAGENT_LOOP_ID_PREFIX)) return;
   // The parent run is over (superseded/stopped/completed): ghost events of a
-  // detached child are dropped — the panel and the bookkeeping are gone.
+  // detached child are dropped - the panel and the bookkeeping are gone.
   if (inlineAgentLoopId !== parentLoopId) return;
 
   const labels = getAgentRendererLabels();
@@ -5052,7 +5052,7 @@ function handleInlineAgentChildLoopEvent(
  * Returns the live console for a child loop, mounting it under the parent's
  * currently-executing spawn tool row on the child's first event. Without a
  * claimed spawn row there is no honest mount point (the spawn was refused, or
- * the row never rendered) — the events are dropped and the child's persisted
+ * the row never rendered) - the events are dropped and the child's persisted
  * trace remains the run record. Never returns a console detached from the
  * live parent panel.
  */
@@ -5068,7 +5068,7 @@ function getOrMountInlineAgentChildConsole(
   );
   mountAgentChildConsole(claimedRow, container);
   // Supersede guard (final review): only clear the slot if THIS child still
-  // owns it — a stale child's first event arriving inside the teardown grace
+  // owns it - a stale child's first event arriving inside the teardown grace
   // after a fresh loop claimed the slot must not null the fresh claim.
   if (inlineAgentSpawningRow === claimedRow) inlineAgentSpawningRow = null;
   const state: InlineAgentChildConsoleState = {
@@ -5089,7 +5089,7 @@ function getOrMountInlineAgentChildConsole(
  * mounted-but-unreferenced in loop-startup/terminal windows, where
  * `isInlineAgentRunning()` is true while the module reference is not set).
  * When no agent surface exists at all, the reason falls back to a persistent
- * page-level notice — the refusal never auto-hides and is never dropped.
+ * page-level notice - the refusal never auto-hides and is never dropped.
  */
 function refuseMidRunUserTurn(reason: string): void {
   const connectedAgentContainers = document.querySelectorAll<HTMLElement>(
@@ -5108,7 +5108,7 @@ function refuseMidRunUserTurn(reason: string): void {
 /**
  * Persistent page-level status notice (last resort of
  * {@link refuseMidRunUserTurn}): same surface and styling as the content
- * toast, but no auto-hide timer — the mandated acknowledgment stays visible
+ * toast, but no auto-hide timer - the mandated acknowledgment stays visible
  * until a future notice replaces it.
  */
 function showPersistentContentNotice(message: string): void {
@@ -5227,7 +5227,7 @@ function isInlineAgentRunning(): boolean {
 /**
  * Synchronously detach the current agent panel and reset the module-level
  * bookkeeping. Does NOT abort the loop (the caller owns that) and does NOT
- * render a footer — used when a new loop supersedes an in-flight one so the
+ * render a footer - used when a new loop supersedes an in-flight one so the
  * old panel disappears immediately instead of lingering until the aborted
  * stream settles (issue #298).
  */
@@ -5346,7 +5346,7 @@ async function startInlineAgentLoop(
       authorizationRequestKey,
     );
     // Descriptor reconciliation: tools dropped from this run's grant are told
-    // to the MODEL once, via the loop's continuation prompt (in-memory only —
+    // to the MODEL once, via the loop's continuation prompt (in-memory only -
     // never persisted, never an AGENT_* event). Same payload-mutation pattern
     // as the modelBackend auto-select above.
     if (authorization.unavailableToolNames?.length) {
@@ -5372,14 +5372,14 @@ async function startInlineAgentLoop(
 
   // M5 (wiring note 3): the loop adapter publishes its DS-web session here so
   // the spawn executor reads the parent's LIVE chain anchor per spawn. One
-  // ref per run — created fresh with the run, never shared across runs.
+  // ref per run - created fresh with the run, never shared across runs.
   const sessionRef: { current: DeepSeekSessionState | null } = { current: null };
   // Review fix 2: per-run one-time claim set for spawn call ids (the in-page
-  // analog of the background one-time call reservation — each stable call id
+  // analog of the background one-time call reservation - each stable call id
   // executes at most one child run). Per-run state, never shared.
   const claimedSpawnCallIds = new Set<string>();
   // The loop's model-facing descriptor set: the parent's grant descriptors
-  // under the released native-search projection (spawn descriptor included —
+  // under the released native-search projection (spawn descriptor included -
   // it is in the grant). The subagent engine derives each child's depth-1 set
   // from the same list.
   const loopToolDescriptors = [
@@ -5400,7 +5400,7 @@ async function startInlineAgentLoop(
 
   const executeTool = async (call: ToolCall): Promise<ToolExecutionRecord> => {
     // P1 subagent (M5): the spawn call resolves through the per-run runner
-    // created below with this loop's AbortSignal — same authorized executor
+    // created below with this loop's AbortSignal - same authorized executor
     // path, no second execution route. The engine bounds the child by the
     // released tool deadline itself (180s + teardown grace) and propagates
     // this loop's abort, so racing it here again would only mask the child's
@@ -5408,7 +5408,7 @@ async function startInlineAgentLoop(
     if (isInlineAgentSubagentSpawnCall(call)) {
       // FIFO claim (review fix 1): detections and pi's sequential executions
       // share the call order, so each spawn call maps to its OWN detected
-      // tool row — two spawns in one step never share a slot.
+      // tool row - two spawns in one step never share a slot.
       const spawnRow = pendingAgentSpawnRows.shift() ?? null;
       inlineAgentSpawningRow = spawnRow;
       try {
@@ -5425,7 +5425,7 @@ async function startInlineAgentLoop(
         });
       } finally {
         // Supersede guard (final review): only clear the slot if THIS spawn
-        // still owns it — a stale run's executor settling inside the teardown
+        // still owns it - a stale run's executor settling inside the teardown
         // grace after a fresh loop claimed the slot must not null the fresh
         // claim (the fresh child's console would fail to mount).
         if (inlineAgentSpawningRow === spawnRow) inlineAgentSpawningRow = null;
@@ -5675,8 +5675,8 @@ function handleAgentStreamChunk(msg: InlineAgentStreamChunkMsg): void {
 
 /**
  * Live reasoning deltas of the current step (AGENT_REASONING_CHUNK). The text
- * is accumulated into the step's reasoning note — created when the narration
- * mounts, or mounted on demand here — and persisted into the trace so a page
+ * is accumulated into the step's reasoning note - created when the narration
+ * mounts, or mounted on demand here - and persisted into the trace so a page
  * refresh restores the same content (Issue: reasoning-not-persisted).
  */
 function handleAgentReasoningChunk(msg: InlineAgentReasoningChunkMsg): void {
@@ -5888,7 +5888,7 @@ async function handleAgentLoopComplete(
     inlineAgentContainerObserver = null;
 
     // The stream redesign (Issue #551): the final turn is the LAST narration
-    // segment of the body stream — there is no separate answer area. The
+    // segment of the body stream - there is no separate answer area. The
     // extension keeps this visible until the persisted web trace is committed;
     // the subsequent new document delegates the same response to DeepSeek's
     // real history renderer.
@@ -6004,7 +6004,7 @@ function getInlineAgentRestoredStepText(text: string): string {
 }
 
 /**
- * Appends a narration segment (markdown body) to the agent stream — used for
+ * Appends a narration segment (markdown body) to the agent stream - used for
  * final answers that are not the last step's own text (budget notices, legacy
  * summary-split runs) and for restored answers.
  */
@@ -6092,7 +6092,7 @@ function runToolExecution(call: ToolCall): Promise<ToolCardResult> {
   const session = getOrCreateActiveToolBlockSession(call);
   if (activeStreamingToolCount > 0) activeStreamingToolCount--;
   // First-turn subagent access (pc directive 3): a parsed subagent_spawn
-  // call on a NATIVE turn is NEVER executed through the manual grant here —
+  // call on a NATIVE turn is NEVER executed through the manual grant here -
   // the spawn executor is loop-owned. The call is deferred as a pending seed
   // (loop-starting at RESPONSE_COMPLETE) and the loop's step 0 runs it
   // through the authorized agent_run executor. A call without request
@@ -6107,7 +6107,7 @@ function runToolExecution(call: ToolCall): Promise<ToolCardResult> {
     }
     // Defer failed (no request identity): fall through to the normal manual
     // path below, which fails closed with a structured error for a grant-less
-    // spawn call — never a fake-ok "Queued" card, never a silent drop
+    // spawn call - never a fake-ok "Queued" card, never a silent drop
     // (review fix: honor the deferred-spawn fall-through contract).
   }
   const task = (async () => {
@@ -6192,7 +6192,7 @@ function takeDeferredFirstTurnSpawnSeeds(
  * replayed TOOL_CALL for the same id is deduped by callId. In-memory only.
  * Returns false when the call cannot seed (no request identity), SIDE-EFFECT
  * FREE: the caller then falls through to the normal manual path, which fails
- * closed with a structured error — a first-turn spawn is NEVER dropped
+ * closed with a structured error - a first-turn spawn is NEVER dropped
  * silently and NEVER executed outside the loop-owned authorized path.
  */
 function deferFirstTurnSpawnCallToLoop(
@@ -7010,7 +7010,7 @@ function getInlineAgentStepText(step: HTMLElement): string {
  * final answer: equality, or the step text is a prefix of the answer after
  * normalizing truncation markers (a step clamped mid-artifact carries
  * `...[truncated]` plus the salvage fence, the full answer does not). Only
- * then may the step narration be REPLACED by the full answer — keeping both
+ * then may the step narration be REPLACED by the full answer - keeping both
  * would duplicate the deliverable. Distinct step notes (budget-paused runs,
  * legacy summary-split traces) never match (Issue #551 redesign).
  */
@@ -7206,7 +7206,7 @@ async function restorePersistedInlineAgentTraces(
     restoredInlineAgentTraces.set(trace.id, normalized);
     // The in-memory repair must also reach storage: without this write the
     // record keeps `status: 'running'` on disk forever (Task 6). Written once
-    // per trace — the restored-set dedupe above makes it idempotent.
+    // per trace - the restored-set dedupe above makes it idempotent.
     if (trace.status === "running") {
       observeReportedPersistence(writeInlineAgentTrace(normalized));
     }
@@ -8153,7 +8153,7 @@ function findRestoredInlineAgentTarget(
   // Virtual-window-safe anchoring (Issue #551 follow-up): `messages` is only
   // the virtual list's rendered window, so index-based fallbacks
   // (`anchorMessageIndex`, tool-record `assistantMessageIndex`) point at the
-  // WRONG message once the window moves — restored consoles mounted under
+  // WRONG message once the window moves - restored consoles mounted under
   // unrelated newer replies. Only DOM-id / own-text identity is trusted; when
   // the anchor message is not rendered this returns null and the trace stays
   // pending until its message scrolls into view (the mutation hub re-runs
@@ -8193,7 +8193,7 @@ function createRestoredInlineAgentContainer(
   const lastStepRecord =
     lastStepIndex === null ? null : sortedSteps[sortedSteps.length - 1];
   // Stream redesign (Issue #551): the restored answer is the run's full final
-  // turn as the LAST narration segment — no separate answer area. New traces
+  // turn as the LAST narration segment - no separate answer area. New traces
   // persist the code-blockified finalText; older traces persisted a raw
   // summary/prefix (or the full raw turn) while the complete reply survived
   // solely in the last step, so the resolver compares the two same-origin
@@ -8318,7 +8318,7 @@ function mountRestoredInlineAgentContainer(
   const host = getAssistantResponseHost(message);
   host.appendChild(container);
   // Post-run visibility parity: console-rendered narration (the runs whose
-  // final turn the native page does NOT own — official-api, budget-paused and
+  // final turn the native page does NOT own - official-api, budget-paused and
   // tool-bearing last steps) must read at the native message's size, not the
   // in-run 14px. The measured size is published on the restored container as
   // an inline custom property; a failed measurement is a no-op and the CSS
@@ -8726,7 +8726,7 @@ function isInlineAgentContinuationRenderedText(
   if (typeof text !== "string" || !text) return false;
   // isInlineAgentContinuationStructure (tags only) is a strict superset of
   // isInlineAgentContinuationPrompt (tags + keywords), so the keyword check
-  // is redundant here — the placeholder covers the history-restored case and
+  // is redundant here - the placeholder covers the history-restored case and
   // the structural check covers the live-rendered case.
   return (
     text.includes(INLINE_AGENT_CONTINUATION_PLACEHOLDER) ||
@@ -9058,7 +9058,7 @@ function isTightPromptInputFrame(
 }
 
 // Coalesce mutation-driven re-patching so rapid DOM churn (streaming messages, layout
-// reflows) can't trigger a per-batch layout pass each frame — the source of the intermittent
+// reflows) can't trigger a per-batch layout pass each frame - the source of the intermittent
 // "probability"-style spillover when the full two-level force-transparent rules were active.
 let backgroundPatchTimer: ReturnType<typeof setTimeout> | null = null;
 

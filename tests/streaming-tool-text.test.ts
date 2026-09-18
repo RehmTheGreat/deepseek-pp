@@ -161,7 +161,7 @@ describe('DSML total capture: live suppression of every variant (S3)', () => {
   it('suppresses the pc variant at EVERY chunk-boundary split point (property loop)', () => {
     // Task-review fix 3 (design §5 F-SPLIT): the exact live variant (bars
     // doubled on both sides, space before the tag name, `calls` wrapper),
-    // split at EVERY index — the boundary can fall inside either bar run,
+    // split at EVERY index - the boundary can fall inside either bar run,
     // the DSML token, the whitespace, or the tag name. At every split the
     // cumulative visible text NEVER contains DSML bytes and the final flush
     // is exactly the surrounding prose.

@@ -286,7 +286,7 @@ describe('createStreamingToolCallParser', () => {
 });
 
 // 并发/重叠请求隔离回归（评审 #1：禁止全局可变状态导致 cwd 串扰）。
-// 两个重叠请求各自携带不同的 activeLocalSkillDir，必须以请求级隔离——
+// 两个重叠请求各自携带不同的 activeLocalSkillDir，必须以请求级隔离-
 // 先发请求拿到的 cwd 不得被后发请求覆盖，亦不得读到 undefined。
 describe('createStreamingToolCallParser 请求级 cwd 隔离（评审 #1）', () => {
   const makeShellDescriptor = (dir: string): ToolDescriptor => ({
@@ -409,7 +409,7 @@ describe('DSML total capture: generalized foreign terminators (S2)', () => {
   it('recognizes the generalized terminator at EVERY chunk-boundary split point (property loop)', () => {
     // Task-review fix 3 (design §5 F-SPLIT): a representative generalized
     // shape outside the old literal set on BOTH bar axes (3 left, 2 right),
-    // fed as two chunks split at EVERY index of the full text — the split can
+    // fed as two chunks split at EVERY index of the full text - the split can
     // land inside the XML open, the payload, the bars, the DSML token, or the
     // tag name; the terminator must bound the mismatched-close call and the
     // following parallel call must still parse, at every single split.

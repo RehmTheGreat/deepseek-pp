@@ -311,7 +311,7 @@ describe('XmlToolStreamFilter DSML total capture (S4, pc directives 2026-09-18)'
   it('never renders the pc variant at ANY frame split point (property loop over every boundary)', () => {
     // Task-review fix 3 (design §5 F-SPLIT): the exact live variant (the
     // surface pc's fresh-chat leak crossed), carried as TWO SSE frames split
-    // at EVERY index of the response text — the boundary can fall inside
+    // at EVERY index of the response text - the boundary can fall inside
     // either bar run, the DSML token, the tolerated whitespace, the tag
     // name, the parameter tag, or the body. At every split the page-rendered
     // controller body contains no DSML bytes and the visible text is exactly

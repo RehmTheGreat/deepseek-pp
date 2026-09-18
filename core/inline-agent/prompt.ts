@@ -55,7 +55,7 @@ function hasInlineAgentContinuationTags(content: string): boolean {
  * tag, so the tags-pair rule alone would leave the resume turn visible in
  * the DS chat. Internal turns must stay invisible (live-DOM hiding, history
  * cleanup, fetch suppression), so detection also accepts the tag pair plus
- * the pinned resume instruction line — EN and zh-CN, byte-identical prefixes
+ * the pinned resume instruction line - EN and zh-CN, byte-identical prefixes
  * of the `prompt.inlineAgent.resumeInterrupted` resources locked by the
  * prompt goldens. A real user message would need the tag pair AND that exact
  * sentence: the same false-positive profile as the tags-pair rule.
@@ -97,7 +97,7 @@ function hasInlineAgentResumePromptTags(content: string): boolean {
 /**
  * The subagent child first-request shape: `<original_task>` pair + the
  * dedicated subagent task intro line, no tool results (the child has executed
- * nothing yet — the empty `<tool_results> []` premise is exactly what the
+ * nothing yet - the empty `<tool_results> []` premise is exactly what the
  * child framing fix removed).
  */
 function hasInlineAgentSubagentTaskTags(content: string): boolean {
@@ -138,8 +138,8 @@ export function isInlineAgentContinuationPrompt(content: string): boolean {
  * rows, reasoning fragments) with the continuation prompt, so the strict
  * {@link isInlineAgentContinuationPrompt} keyword check can miss it and leave
  * an empty user bubble. The paired `<original_task>` + `<tool_results[_so_far]>`
- * tags are a strong enough structural signal on their own — a real user
- * message would not contain both — so we drop the keyword requirement here.
+ * tags are a strong enough structural signal on their own - a real user
+ * message would not contain both - so we drop the keyword requirement here.
  *
  * The strict version is still used for history-list API cleanup, where the
  * raw prompt text is intact and false positives are costlier.
@@ -189,7 +189,7 @@ function hasPendingActionAtTail(text: string): boolean {
   if (afterPendingAction.length > PENDING_ACTION_AFTER_MAX_CHARS) return false;
   // A fenced code block right after the pending-action phrase IS the
   // deliverable (the DeepSeek native renderer takes it over): the tail is a
-  // renderable body, not an empty promise — nothing is pending, no nudge.
+  // renderable body, not an empty promise - nothing is pending, no nudge.
   if (afterPendingAction.includes('```')) return false;
   return true;
 }
@@ -205,8 +205,8 @@ function hasPendingActionAtTail(text: string): boolean {
  * `toolDescriptors` carries the loop's model-facing descriptor set (the FULL
  * runtime catalog plus subagent_spawn). When present, the SAME '### Tool'
  * schema section the first turn's system prompt uses is APPENDED after the
- * tool results, so the model sees its callable tools — including
- * subagent_spawn — on every loop turn. Absent/empty → no section, released
+ * tool results, so the model sees its callable tools - including
+ * subagent_spawn - on every loop turn. Absent/empty → no section, released
  * bytes.
  */
 export function buildContinuationPrompt(
@@ -259,14 +259,14 @@ export function buildContinuationPrompt(
  * the final deliverable as the last message (the child's final text IS the
  * parent's tool result, unchanged). It also teaches the explicit
  * `<task_complete>` signal up front (diagnosis §4.2, task-review fix 2) so
- * the stop rule never has to rely on the pending-tail heuristic alone —
+ * the stop rule never has to rely on the pending-tail heuristic alone -
  * before this line, `<task_complete>` was taught only in nudge prompts,
  * which a healthy-looking child answer never triggers.
  *
  * The `<original_task>` pair is kept (with the pair+marker detector legs in
  * this module) so the child's first request stays classified as an internal
  * inline-agent turn everywhere (fetch-hook page-event suppression, history
- * cleanup, live-DOM structural hiding) — without it the child's task would
+ * cleanup, live-DOM structural hiding) - without it the child's task would
  * render as a visible user bubble in the DS chat. The tool-schema section is
  * appended from the child's DERIVED descriptor set (spawn-free, depth 1),
  * exactly like every other loop request.
@@ -291,8 +291,8 @@ export function buildSubagentTaskPrompt(
 
 /**
  * Builds the resume prompt for an interrupted turn (fix/v1.14.1-tool-loop):
- * continuation-style framing — instruction lines plus the `<original_task>`
- * block, like `buildContinuationPrompt` — but with NO `<tool_results>` (the
+ * continuation-style framing - instruction lines plus the `<original_task>`
+ * block, like `buildContinuationPrompt` - but with NO `<tool_results>` (the
  * interrupted stream died before its tools could matter; prior results are
  * already in the conversation chain) and deliberately NO
  * `<previous_assistant_text>` (its nudge semantics do not apply to a stream
@@ -351,8 +351,8 @@ export function buildNudgePrompt(
  * The loop's tool-schema advertisement (uniform-tools task 4): the SAME
  * `renderToolSchemas` rendering the first turn's system section uses
  * (`### Tool <name>` blocks with the valid call format), appended after the
- * tool results so the model sees its callable tools — including
- * `subagent_spawn` — on every loop turn. No descriptors → empty (released
+ * tool results so the model sees its callable tools - including
+ * `subagent_spawn` - on every loop turn. No descriptors → empty (released
  * bytes). Resume prompts deliberately never call this: the resume turn
  * carries chain context only.
  */
