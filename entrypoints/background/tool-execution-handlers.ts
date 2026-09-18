@@ -107,15 +107,22 @@ export function createToolExecutionRuntimeHandlers(
       const currentDescriptors = payload.descriptorIds
         ? await dependencies.getToolDescriptors(locale)
         : await dependencies.getPromptToolDescriptors(locale, payload.toolIntent ?? '');
-      // P1 subagent (M5): the spawn tool is agent-run-only. It never enters
-      // the shared prompt catalogs (manual chat / sidepanel / automation
-      // prompts stay byte-identical); agent-run grants resolve it so the
-      // parent inline-agent loop can advertise and execute it through the
-      // loop's authorized path. Descriptor text/identity come from the single
-      // factory in core/inline-agent/subagent-tool.ts.
-      const grantableDescriptors = payload.trigger === 'agent_run'
-        ? withInlineAgentSubagentSpawnDescriptor(currentDescriptors)
-        : currentDescriptors;
+      // P1 subagent (M5) + first-turn access (pc directive, 2026-09-18): the
+      // spawn descriptor merges into agent_run grants AND manual_chat grants.
+      // Manual chat is where the FIRST turn lives: merging here advertises
+      // `subagent_spawn` in the turn's `### Tool` section (the render surface
+      // projects `authorization.descriptors`) and makes the native-turn parser
+      // recognize its XML tag. The shared prompt catalogs (manual chat /
+      // sidepanel / automation prompt sources) stay byte-identical — only the
+      // grant-time merge widens. Spawn EXECUTION stays loop-owned: content
+      // defers a first-turn spawn call into the inline-agent loop, which
+      // executes it through the authorized agent_run path (step 0). The
+      // descriptor text/identity come from the single factory in
+      // core/inline-agent/subagent-tool.ts.
+      const grantableDescriptors =
+        payload.trigger === 'agent_run' || payload.trigger === 'manual_chat'
+          ? withInlineAgentSubagentSpawnDescriptor(currentDescriptors)
+          : currentDescriptors;
       const requestedIds = payload.descriptorIds;
       const requestedDescriptorIds = requestedIds
         ? new Set(requestedIds)

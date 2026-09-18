@@ -114,6 +114,28 @@ describe('selectStartableToolExecutions (fresh-loop gate policy)', () => {
     });
     expect(selectStartableToolExecutions([interrupted])).toEqual([interrupted]);
   });
+
+  it('a pending subagent_spawn seed IS loop-starting (deferred first-turn spawn)', () => {
+    // First-turn subagent access (pc directive 3): a parsed subagent_spawn
+    // call on the NATIVE trigger turn is deferred into the loop as a pending
+    // seed — it has not executed yet, but it is BY DESIGN the loop's step 0,
+    // so the gate must treat it as loop-starting. A first turn whose ONLY
+    // tool call is the deferred spawn starts the loop instead of vanishing.
+    const seed = makeExecution({ pending: true, name: 'subagent_spawn' });
+    expect(selectStartableToolExecutions([seed])).toEqual([seed]);
+  });
+
+  it('a pending non-spawn execution still never starts the loop', () => {
+    // The seed exception is scoped to the exact spawn invocation name: an
+    // artifact-streaming pending record (or any other pending tool) keeps the
+    // released "not an execution yet" policy.
+    expect(
+      selectStartableToolExecutions([makeExecution({ pending: true, name: 'artifact_create' })]),
+    ).toEqual([]);
+    expect(
+      selectStartableToolExecutions([makeExecution({ pending: true, name: 'subagent_spawn_typo' })]),
+    ).toEqual([]);
+  });
 });
 
 describe('content-script wiring of the loop gate (source contract)', () => {
@@ -153,6 +175,26 @@ describe('content-script wiring of the loop gate (source contract)', () => {
     const gateIndex = contentSource.indexOf(GATE_SUPPRESSION);
     expect(ownTurnReturn).toBeGreaterThanOrEqual(0);
     expect(gateIndex).toBeGreaterThan(ownTurnReturn);
+  });
+
+  it('defers a parsed first-turn spawn into the loop instead of executing it on the manual grant', () => {
+    // First-turn subagent access (pc directive 3): runToolExecution intercepts
+    // the spawn call BEFORE the background manual path, seeds it into the turn
+    // (the gate's loop-starting pending record), and hands the CALL itself to
+    // the loop payload — the loop's step 0 executes it through the authorized
+    // agent_run executor. A first-turn spawn must NEVER execute outside that
+    // path.
+    const runTool = contentSource.indexOf('function runToolExecution(');
+    const interceptIndex = contentSource.indexOf('isInlineAgentSubagentSpawnCall(call)', runTool);
+    expect(runTool).toBeGreaterThan(-1);
+    expect(interceptIndex).toBeGreaterThan(runTool);
+    // The interception happens before the background execution closure.
+    const backgroundExecuteIndex = contentSource.indexOf('executeToolCall(call)', interceptIndex);
+    expect(backgroundExecuteIndex).toBeGreaterThan(interceptIndex);
+    // The deferred calls ride the loop payload; the seed records ride the
+    // gate's executions.
+    expect(contentSource).toContain('firstTurnSpawnCalls:');
+    expect(contentSource).toContain('takeDeferredFirstTurnSpawnSeeds(');
   });
 
   it('requests the loop grant over the FULL turn catalog with spawn merged (no descriptor subset)', () => {

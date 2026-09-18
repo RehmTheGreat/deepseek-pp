@@ -91,6 +91,10 @@ const call: ToolCall = {
   },
 };
 
+// The single spawn descriptor factory truth, frozen at module load: grants
+// that merge it (agent_run AND manual_chat) must append exactly this shape.
+const spawnDescriptor = createInlineAgentSubagentSpawnDescriptor();
+
 describe('R4.2 tool runtime handler ownership', () => {
   it('creates exactly the 32 inventory-assigned handlers without duplicate ownership', () => {
     const handlers = createToolRuntimeHandlers({
@@ -447,15 +451,20 @@ describe('tool execution runtime handlers', () => {
   it('distinguishes omitted descriptor selection from an explicit empty selection', async () => {
     const dependencies = createExecutionDependencies();
     vi.mocked(dependencies.getToolDescriptors).mockResolvedValue([descriptor]);
+    vi.mocked(dependencies.getPromptToolDescriptors).mockResolvedValue([descriptor]);
     const handlers = createToolExecutionRuntimeHandlers(dependencies);
 
+    // First-turn subagent access (pc directive): manual_chat grants merge the
+    // spawn descriptor too, so the FIRST turn's prompt advertises it and the
+    // native-turn parser recognizes it. The spawn tool itself is never
+    // executed through this grant (content defers it into the loop).
     await dispatch(handlers, {
       type: 'CREATE_TOOL_AUTHORIZATION',
       payload: { requestId: 'request-all', trigger: 'manual_chat', chatSessionId: 'chat-1' },
     }, deepSeekContext);
     expect(dependencies.createToolAuthorization).toHaveBeenNthCalledWith(
       1,
-      expect.objectContaining({ descriptors: [descriptor] }),
+      expect.objectContaining({ descriptors: [descriptor, spawnDescriptor] }),
     );
 
     await dispatch(handlers, {
@@ -530,14 +539,23 @@ describe('tool execution runtime handlers', () => {
     const dependencies = createExecutionDependencies();
     const spawn = createInlineAgentSubagentSpawnDescriptor();
     vi.mocked(dependencies.getToolDescriptors).mockResolvedValue([descriptor]);
+    vi.mocked(dependencies.getPromptToolDescriptors).mockResolvedValue([descriptor]);
     const handlers = createToolExecutionRuntimeHandlers(dependencies);
 
     // Omitted ids: full grantable catalog, never a dropped-names field.
+    // manual_chat merges the spawn descriptor (first-turn subagent access),
+    // so the grantable catalog here is [descriptor, spawn].
     const omitted = await dispatch(handlers, {
       type: 'CREATE_TOOL_AUTHORIZATION',
       payload: { requestId: 'request-all', trigger: 'manual_chat', chatSessionId: 'chat-1' },
     }, deepSeekContext) as ToolAuthorizationGrantSummary;
     expect(omitted).not.toHaveProperty('unavailableToolNames');
+    expect(dependencies.createToolAuthorization).toHaveBeenLastCalledWith(
+      expect.objectContaining({
+        descriptors: [descriptor, spawn],
+        trigger: 'manual_chat',
+      }),
+    );
 
     // Explicit empty selection: the unchanged empty-grant path — never the
     // all-stale fallback set (the caller asked for no tools).
@@ -588,8 +606,13 @@ describe('tool execution runtime handlers', () => {
       },
     }, deepSeekContext) as ToolAuthorizationGrantSummary;
 
+    // All requested ids stale → the full grantable set is granted; the
+    // manual_chat grantable set merges the spawn descriptor too.
     expect(dependencies.createToolAuthorization).toHaveBeenLastCalledWith(
-      expect.objectContaining({ descriptors: [descriptor], trigger: 'manual_chat' }),
+      expect.objectContaining({
+        descriptors: [descriptor, createInlineAgentSubagentSpawnDescriptor()],
+        trigger: 'manual_chat',
+      }),
     );
     expect(result.unavailableToolNames).toEqual(['Old tool']);
   });
@@ -632,8 +655,12 @@ describe('tool execution runtime handlers', () => {
       'en',
       'discover a workspace capability',
     );
+    // The manual_chat grantable set merges the spawn descriptor (first-turn
+    // subagent access) on top of the prompt projection.
     expect(dependencies.createToolAuthorization).toHaveBeenLastCalledWith(
-      expect.objectContaining({ descriptors: [descriptor, discover] }),
+      expect.objectContaining({
+        descriptors: [descriptor, discover, createInlineAgentSubagentSpawnDescriptor()],
+      }),
     );
 
     await dispatch(handlers, {

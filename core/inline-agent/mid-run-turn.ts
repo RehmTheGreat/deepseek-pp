@@ -16,6 +16,7 @@
  * (stopInlineAgent, panel notice, fresh loop start).
  */
 
+import { INLINE_AGENT_SUBAGENT_INVOCATION_NAME } from './subagent';
 import type { ToolExecutionRecord } from '../types';
 
 export interface MidRunTurnInput {
@@ -94,9 +95,35 @@ export function canAnchorFreshLoop<
  * subset anymore. A pending start (artifact still streaming) is not an
  * execution yet and must never start a loop; an interrupted (incomplete
  * streamed) call stays included so the loop can see the failure and recover.
+ *
+ * First-turn subagent access (pc directive 3, 2026-09-18) adds ONE policy
+ * exception: a pending `subagent_spawn` record is a DEFERRED seed, not a
+ * streaming start. The call was fully parsed (and granted) on the native
+ * trigger turn, but its execution is BY DESIGN owned by the loop it starts —
+ * the loop's step 0 runs it through the authorized agent_run executor and the
+ * model receives the child outcome as its tool result. Without this exception
+ * a first turn whose ONLY tool call is the deferred spawn would vanish at
+ * exactly this gate (pending → filtered → zero startable → no loop → the
+ * model's spawn request dies silently).
  */
 export function selectStartableToolExecutions(
   executions: readonly ToolExecutionRecord[],
 ): ToolExecutionRecord[] {
-  return executions.filter((execution) => !execution.pending);
+  return executions.filter(
+    (execution) => !execution.pending || isInlineAgentSpawnSeedExecution(execution),
+  );
+}
+
+/**
+ * The deferred first-turn spawn seed shape: a pending record of the spawn
+ * tool. Produced only by content.ts's runToolExecution interception (the
+ * TOOL_CALL_STARTED pending row is removed and replaced by this seed), so a
+ * pending spawn record reaching RESPONSE_COMPLETE is always a deliberate
+ * seed — never a half-finished execution.
+ */
+export function isInlineAgentSpawnSeedExecution(
+  execution: ToolExecutionRecord,
+): boolean {
+  return execution.pending === true
+    && execution.name === INLINE_AGENT_SUBAGENT_INVOCATION_NAME;
 }

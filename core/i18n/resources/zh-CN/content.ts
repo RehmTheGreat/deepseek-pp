@@ -110,6 +110,8 @@ export const content = {
     subagentStatusDetail: '子代理运行{status} · {steps} 步 · {tools} 次工具调用',
     subagentNoFinalText: '子代理运行已完成，但未返回文本。',
     subagentUnavailable: '子代理工具在当前运行中不可用。',
+    subagentDeferred: '已排队：子代理将在智能体会话中首先执行。',
+    subagentDeferAbandoned: '子代理未能运行：本回合未能启动智能体会话。',
   },
   permission: {
     webFetch: 'DeepSeek++ 需要访问 {origin} 的权限以获取该页面内容',

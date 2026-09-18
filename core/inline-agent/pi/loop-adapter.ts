@@ -438,6 +438,55 @@ export async function runPiInlineAgentLoop(deps: PiLoopAdapterDeps): Promise<voi
   });
 
   const budget = createPiLoopBudgetMap();
+
+  // ------------------------------------------------ first-turn spawn seeds
+  // First-turn subagent access (pc directive 3): a subagent_spawn call parsed
+  // on the NATIVE trigger turn is deferred here by content.ts and executes as
+  // the run's STEP 0 through the SAME authorized `executeTool` closure the
+  // engine uses (spawn routing → per-run runner + claim + child console). The
+  // step-0 events reuse the existing AGENT_* protocol; the executed records
+  // join the trigger-turn executions, so the model's first continuation
+  // request carries the child outcome as its own tool result. The seed runs
+  // BEFORE the first model request, so `beforeToolCall`'s chain gate never
+  // applies to it: its authorization story is the trigger turn's own parsed
+  // call, re-bound to this run's agent_run grant by the executor (source
+  // rewrite), and the web chain already anchors at the trigger turn's
+  // assistant message (the anchor the loop started from). A seed that cannot
+  // resolve through the executor surfaces as its structured failed record —
+  // never prose, never a silent drop.
+  if (!signal.aborted && payload.firstTurnSpawnCalls?.length) {
+    post('AGENT_STEP_STARTED', { loopId, stepIndex });
+    const seedRecords: ToolExecutionRecord[] = [];
+    for (const spawnCall of payload.firstTurnSpawnCalls) {
+      if (signal.aborted) break;
+      postToolDetected(
+        spawnCall.id ?? '',
+        spawnCall.invocationName ?? spawnCall.name,
+        spawnCall.payload,
+      );
+      // The pending seed record rides payload.toolExecutions (the gate's
+      // loop-starting signal); the executed record REPLACES it so the model
+      // sees exactly one spawn tool result.
+      const seedIndex = collectedExecutions.findIndex((execution) =>
+        execution.pending === true
+        && (!!spawnCall.id && execution.callId === spawnCall.id
+          || (!spawnCall.id && execution.name === (spawnCall.invocationName ?? spawnCall.name))));
+      if (seedIndex >= 0) collectedExecutions.splice(seedIndex, 1);
+      seedRecords.push(await executeTool(spawnCall));
+    }
+    if (seedRecords.length > 0) {
+      collectedExecutions.push(...seedRecords);
+      post('AGENT_STEP_COMPLETE', {
+        loopId,
+        stepIndex,
+        responseMessageId: chainResponseMessageId(),
+        toolExecutions: [...seedRecords],
+      } satisfies InlineAgentStepCompleteMsg);
+      lastStepCompleted = true;
+      stepIndex += 1;
+    }
+  }
+
   const config: AgentLoopConfig = {
     model,
     toolExecution: 'sequential',

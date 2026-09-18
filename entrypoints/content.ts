@@ -170,6 +170,7 @@ import {
 import {
   decideMidRunTurn,
   canAnchorFreshLoop,
+  isInlineAgentSpawnSeedExecution,
   selectStartableToolExecutions,
 } from "../core/inline-agent/mid-run-turn";
 import { renderInlineMarkdown } from "../core/inline-agent/markdown";
@@ -487,6 +488,21 @@ const pendingToolExecutionTasksByRequest = new Map<
 >();
 const pendingStartedToolCallsByRequest =
   new PendingRequestRegistry<PendingStartedToolCall>();
+/**
+ * First-turn subagent access (pc directive 3): parsed `subagent_spawn` calls
+ * of the NATIVE trigger turn, deferred into the inline-agent loop. Keyed by
+ * the turn's authorization requestId; every entry carries the stabilized CALL
+ * (the loop's step-0 executor needs name/payload/raw identity) plus its
+ * PENDING seed record (the loop-start gate's loop-starting signal). The seeds
+ * never enter the persisted tool-block session, so no restore surface can
+ * render a forever-pending row; a started loop consumes them one-shot, and a
+ * turn whose loop cannot start resolves them as failed records in the refusal
+ * surface. In-memory only, never persisted, never an AGENT_* event.
+ */
+const deferredFirstTurnSpawnSeeds = new Map<
+  string,
+  Array<{ call: ToolCall; record: ToolExecutionRecord }>
+>();
 let responseGeneration = 0;
 let tokenSpeedEl: HTMLElement | null = null;
 let tokenSpeedBootstrapTimer: ReturnType<typeof setTimeout> | null = null;
@@ -1363,10 +1379,21 @@ async function dispatchMainWorldMessage(
         await waitForPendingToolExecutions(complete.requestId);
         await finalizeInterruptedToolStarts(complete.requestId);
         if (generation !== responseGeneration) break;
+        // First-turn subagent access: consume this turn's deferred spawn
+        // seeds (one-shot, winning generation only). The pending seed records
+        // join `completedExecutions` so the loop-start gate treats the turn
+        // as loop-starting; the CALLS themselves ride into
+        // startInlineAgentIfNeeded and become the loop's step 0.
+        const deferredSpawnSeeds = takeDeferredFirstTurnSpawnSeeds(
+          complete.requestId,
+        );
         const session = getActiveToolBlockSessionForComplete(complete);
         const completedExecutions = session
           ? [...session.executions]
           : [...toolExecutions];
+        for (const seed of deferredSpawnSeeds) {
+          completedExecutions.push(seed.record);
+        }
         if (session && session.executions.length > 0) {
           await persistToolBlockSession(session, complete.text, complete);
           activeToolBlockSessions.delete(session.id);
@@ -1384,7 +1411,7 @@ async function dispatchMainWorldMessage(
             );
           toolExecutions = [];
         }
-        void startInlineAgentIfNeeded(complete, completedExecutions);
+        void startInlineAgentIfNeeded(complete, completedExecutions, deferredSpawnSeeds);
         schedulePetIdle();
         break;
       }
@@ -4502,9 +4529,16 @@ function relativeLuminance(red: number, green: number, blue: number): number {
   return 0.2126 * r + 0.7152 * g + 0.0722 * b;
 }
 
+/** One deferred first-turn spawn: the stabilized call plus its gate record. */
+interface DeferredFirstTurnSpawnSeed {
+  call: ToolCall;
+  record: ToolExecutionRecord;
+}
+
 async function startInlineAgentIfNeeded(
   complete: ResponseCompletePayload,
   executions: ToolExecutionRecord[],
+  deferredSpawnSeeds: DeferredFirstTurnSpawnSeed[] = [],
 ): Promise<void> {
   if (isInlineAgentResponseComplete(complete)) return;
 
@@ -4606,6 +4640,14 @@ async function startInlineAgentIfNeeded(
     toolDescriptors: withInlineAgentSubagentSpawnDescriptor(
       authorization.descriptors,
     ),
+    // First-turn subagent access (pc directive 3): the deferred spawn calls
+    // parsed on THIS turn. The loop executes them as its step 0 through the
+    // authorized agent_run executor; they never run on the manual grant.
+    ...(deferredSpawnSeeds.length > 0
+      ? {
+        firstTurnSpawnCalls: deferredSpawnSeeds.map((seed) => seed.call),
+      }
+      : {}),
     locale: currentContentLocale,
     powWasmUrl: chrome.runtime.getURL(DEEPSEEK_POW_WASM_PATH),
   };
@@ -4663,7 +4705,10 @@ async function startInlineAgentIfNeeded(
   activeInlineAgentTrace = createInlineAgentTrace(
     complete,
     loopId,
-    executions,
+    // The deferred spawn seeds are NOT initial executions: they execute as
+    // the loop's step 0 and reach the trace through that step's records.
+    // Keeping them out prevents a forever-pending row in restored consoles.
+    executions.filter((execution) => !isInlineAgentSpawnSeedExecution(execution)),
     anchorMessageIndex,
     anchorContent,
   );
@@ -4722,6 +4767,25 @@ function mountRefusedToolTurnRecord(
 ): void {
   if (executions.length === 0) return;
   injectInlineAgentStyles();
+  // Deferred first-turn spawn seeds whose loop never started must show an
+  // honest terminal state in the refusal record, not a forever-pending row.
+  const displayExecutions = executions.map((execution) =>
+    isInlineAgentSpawnSeedExecution(execution)
+      ? {
+        ...execution,
+        pending: false,
+        result: {
+          ok: false,
+          summary: contentT("content.agent.subagentDeferAbandoned"),
+          error: {
+            code: "subagent_unavailable",
+            message: contentT("content.agent.subagentDeferAbandoned"),
+            retryable: false,
+          },
+        },
+      }
+      : execution,
+  );
   const target = findInlineAgentLiveTarget(
     complete,
     getAssistantMessages(),
@@ -4730,7 +4794,7 @@ function mountRefusedToolTurnRecord(
   if (!target) return;
   const host = getAssistantResponseHost(target);
   host.appendChild(
-    createAgentRefusedTurnRecord(header, executions, getAgentRendererLabels()),
+    createAgentRefusedTurnRecord(header, displayExecutions, getAgentRendererLabels()),
   );
 }
 
@@ -6027,6 +6091,20 @@ function handleAgentLoopError(msg: InlineAgentLoopErrorMsg): void {
 function runToolExecution(call: ToolCall): Promise<ToolCardResult> {
   const session = getOrCreateActiveToolBlockSession(call);
   if (activeStreamingToolCount > 0) activeStreamingToolCount--;
+  // First-turn subagent access (pc directive 3): a parsed subagent_spawn
+  // call on a NATIVE turn is NEVER executed through the manual grant here —
+  // the spawn executor is loop-owned. The call is deferred as a pending seed
+  // (loop-starting at RESPONSE_COMPLETE) and the loop's step 0 runs it
+  // through the authorized agent_run executor. A call without request
+  // identity cannot seed; it falls through to the normal path, which fails
+  // closed with a structured error instead of dropping silently.
+  if (isInlineAgentSubagentSpawnCall(call)) {
+    deferFirstTurnSpawnCallToLoop(call, session);
+    return Promise.resolve({
+      ok: true,
+      summary: contentT("content.agent.subagentDeferred"),
+    });
+  }
   const task = (async () => {
     if (isExternalizedToolPayloadCall(call)) {
       await waitForExternalToolPayloadWrites(call);
@@ -6085,6 +6163,64 @@ function ensureToolCallId(call: ToolCall): ToolCall {
     raw: call.raw,
   });
   return { ...call, id: `legacy:${hashString(identity)}` };
+}
+
+/**
+ * Takes this turn's deferred first-turn spawn seeds (one-shot). Consumed by
+ * the RESPONSE_COMPLETE handler of the winning response generation only.
+ */
+function takeDeferredFirstTurnSpawnSeeds(
+  requestId: string,
+): DeferredFirstTurnSpawnSeed[] {
+  if (!requestId) return [];
+  const seeds = deferredFirstTurnSpawnSeeds.get(requestId) ?? [];
+  deferredFirstTurnSpawnSeeds.delete(requestId);
+  return seeds;
+}
+
+/**
+ * Defers one parsed first-turn spawn call (pc directive 3): the pending row
+ * from TOOL_CALL_STARTED is removed (it must never finalize as an interrupted
+ * manual execution, and no pending row may reach the persisted block), the
+ * stabilized call plus its pending seed record are stashed under the turn's
+ * requestId, and RESPONSE_COMPLETE hands both to the loop-start gate. A
+ * replayed TOOL_CALL for the same id is deduped by callId. In-memory only.
+ * Returns false when the call cannot seed (no request identity): the caller
+ * then falls through to the normal manual path, which fails closed with a
+ * structured error — a first-turn spawn is NEVER dropped silently and NEVER
+ * executed outside the loop-owned authorized path.
+ */
+function deferFirstTurnSpawnCallToLoop(
+  call: ToolCall,
+  session: ActiveToolBlockSession,
+): boolean {
+  removePendingToolExecution(session, call);
+  const stabilized = ensureToolCallId(call);
+  const requestId = stabilized.source?.requestId;
+  if (!requestId || !stabilized.id) return false;
+  const seeds = deferredFirstTurnSpawnSeeds.get(requestId) ?? [];
+  if (seeds.some((seed) => seed.record.callId === stabilized.id)) return true;
+  seeds.push({
+    call: stabilized,
+    record: {
+      callId: stabilized.id,
+      pending: true,
+      name: stabilized.name,
+      provider: stabilized.provider,
+      descriptorId: stabilized.descriptorId,
+      result: {
+        ok: true,
+        summary: contentT("content.agent.subagentDeferred"),
+      },
+    },
+  });
+  // Bounded by one turn: a newer requestId supersedes any older stash, so
+  // seeds of abandoned responses can never batch-execute later.
+  for (const key of deferredFirstTurnSpawnSeeds.keys()) {
+    if (key !== requestId) deferredFirstTurnSpawnSeeds.delete(key);
+  }
+  deferredFirstTurnSpawnSeeds.set(requestId, seeds);
+  return true;
 }
 
 function getToolAuthorizationForCall(

@@ -392,9 +392,15 @@ describe('M5 wiring seams (source contracts, content entrypoint pattern)', () =>
     expect(contentSource).toContain('sessionRef.current?.parentMessageId');
   });
 
-  it('merges the agent-only descriptor into agent-run grants in the background handler', () => {
+  it('merges the spawn descriptor into agent-run AND manual_chat grants in the background handler', () => {
     expect(handlersSource).toContain('withInlineAgentSubagentSpawnDescriptor');
-    expect(handlersSource).toMatch(/trigger === 'agent_run'/);
+    // First-turn subagent access (pc directive): manual_chat grants merge the
+    // spawn descriptor too, so the FIRST turn's prompt advertises it and the
+    // native-turn parser recognizes it. The shared prompt CATALOG sources stay
+    // untouched — only the grant-time merge widens.
+    expect(handlersSource).toMatch(
+      /payload\.trigger === 'agent_run'\s*\|\|\s*payload\.trigger === 'manual_chat'/,
+    );
   });
 
   it('never adds the spawn tool to the shared prompt catalog (prompt bytes unchanged)', () => {
@@ -778,5 +784,205 @@ describe('E2E advertisement + spawn flow (uniform-tools task 4)', () => {
     const rows = await store.read();
     const childRow = rows.find((row) => row.parentTraceId === 'trace-task');
     expect(childRow).toMatchObject({ status: 'complete', finalText: 'banana' });
+  });
+});
+describe('first-turn subagent_spawn (native-turn deferral, pc directive 3)', () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+    adapterMocks.createPowHeaders.mockResolvedValue({ 'X-DS-PoW-Response': 'pow-1' });
+  });
+
+  afterEach(() => {
+    vi.useRealTimers();
+  });
+
+  const firstTurnSpawnCall = {
+    id: 'spawn-first-turn-1',
+    name: 'subagent_spawn',
+    invocationName: 'subagent_spawn',
+    payload: { task: 'First-turn subagent task' },
+    raw: '<subagent_spawn>{"task":"First-turn subagent task"}</subagent_spawn>',
+  } as never;
+
+  it('the loop adapter executes a deferred first-turn spawn as STEP 0 through executeTool BEFORE the first model request', async () => {
+    vi.useFakeTimers();
+    // Wire choreography: the spawn's CHILD request must be the FIRST model
+    // request (the spawn executed pre-engine), the parent continuation second.
+    adapterMocks.submitPromptStreaming
+      .mockImplementationOnce(async (_input: unknown, handlers: { onTextChunk: (t: string) => void }) => {
+        handlers.onTextChunk('child first-turn answer.');
+        return { assistantText: '', responseMessageId: 202, requestMessageId: 201, finished: true };
+      })
+      .mockImplementationOnce(async (_input: unknown, handlers: { onTextChunk: (t: string) => void }) => {
+        handlers.onTextChunk('Parent saw the child outcome and finished.');
+        return { assistantText: '', responseMessageId: 104, requestMessageId: 103, finished: true };
+      });
+
+    const timeline: string[] = [];
+    const events: Array<{ type: string; data: unknown }> = [];
+    const executedCalls: Array<{ name: string; payload: unknown; source?: { trigger?: string } }> = [];
+    const runner = createInlineAgentSubagentRunner({
+      parentTraceId: 'trace-ft',
+      parentLoopId: 'loop-ft',
+      chatSessionId: 'chat-1',
+      traceUrl: 'https://chat.deepseek.com/a/chat/s/chat-1',
+      promptOptions: { modelType: null, searchEnabled: false, thinkingEnabled: false, refFileIds: [] },
+      toolDescriptors: [descriptor('web_search')],
+      executeTool: async () => {
+        throw new Error('no non-spawn tools in this test');
+      },
+      signal: new AbortController().signal,
+      upsertTrace: async () => {},
+      locale: 'en',
+    });
+    const claimedSpawnCallIds = new Set<string>();
+    const sessionRef: { current: DeepSeekSessionState | null } = { current: null };
+    const executeTool = vi.fn(async (call: {
+      id?: string;
+      name: string;
+      invocationName?: string;
+      payload: unknown;
+    }) => {
+      if (!isInlineAgentSubagentSpawnCall(call)) throw new Error(`unexpected call ${call.name}`);
+      const parsed = parseInlineAgentSubagentSpawnPayload(call.payload);
+      if (!parsed.ok) throw new Error('payload must parse in this test');
+      const claim = claimInlineAgentSubagentSpawnCall(claimedSpawnCallIds, call.id ?? '');
+      if (!claim.ok) throw new Error('claim must succeed in this test');
+      timeline.push(`execute:${call.name}`);
+      const spawnResult = await runner.spawn({
+        payload: parsed.payload,
+        chainParentMessageId: sessionRef.current?.parentMessageId ?? 100,
+      });
+      const described = describeInlineAgentSubagentSpawnResult('en', spawnResult);
+      executedCalls.push(call);
+      return {
+        name: call.name,
+        result: {
+          ok: described.ok,
+          summary: described.summary,
+          detail: described.detail,
+          error: described.error,
+        },
+      };
+    });
+
+    const run = runInlineAgentLoop(
+      {
+        loopId: 'loop-ft',
+        chatSessionId: 'chat-1',
+        parentMessageId: 100,
+        originalPrompt: 'Do you have subagent access?',
+        agentTaskPrompt: 'Do you have subagent access?',
+        toolExecutions: [],
+        promptOptions: { modelType: null, searchEnabled: false, thinkingEnabled: false, refFileIds: [] },
+        toolDescriptors: withInlineAgentSubagentSpawnDescriptor([descriptor('web_search')]),
+        locale: 'en',
+        // The deferral channel: content.ts parsed the spawn call on the
+        // NATIVE trigger turn and hands it to the loop instead of executing
+        // it outside the authorized agent_run path.
+        firstTurnSpawnCalls: [firstTurnSpawnCall],
+      } as Parameters<typeof runInlineAgentLoop>[0],
+      {
+        post: (type, data) => {
+          events.push({ type, data });
+          timeline.push(type);
+        },
+        executeTool,
+        signal: new AbortController().signal,
+        sessionRef,
+      },
+    );
+    await vi.advanceTimersByTimeAsync(7_000);
+    await run;
+
+    // 1. STEP-0 EXECUTION ORDER: the spawn ran through the loop's authorized
+    // executor BEFORE any parent model request (the child request is the
+    // first submitPromptStreaming call, triggered INSIDE executeTool).
+    expect(executedCalls).toHaveLength(1);
+    expect(timeline[0]).toBe('AGENT_STEP_STARTED');
+    expect(timeline.indexOf('execute:subagent_spawn')).toBeGreaterThan(-1);
+    expect(timeline.indexOf('execute:subagent_spawn')).toBeLessThan(timeline.indexOf('AGENT_STEP_COMPLETE'));
+    expect(adapterMocks.submitPromptStreaming.mock.calls).toHaveLength(2);
+    const stepStarted = events.filter((event) => event.type === 'AGENT_STEP_STARTED') as
+      Array<{ data: { stepIndex: number } }>;
+    expect(stepStarted[0]?.data.stepIndex).toBe(0);
+    const toolDetected = events.find((event) => event.type === 'AGENT_TOOL_DETECTED') as
+      | { data: { stepIndex: number; call: { name: string } } }
+      | undefined;
+    expect(toolDetected?.data.stepIndex).toBe(0);
+    expect(toolDetected?.data.call.name).toBe('subagent_spawn');
+
+    // 2. THE MODEL SEES THE CHILD OUTCOME: the step completed with the spawn
+    // record before the parent's continuation request, and that request's
+    // prompt embeds the child answer as the tool result.
+    const stepComplete = events.filter((event) => event.type === 'AGENT_STEP_COMPLETE') as
+      Array<{ data: { stepIndex: number; toolExecutions: Array<{ name: string; result: { ok: boolean; summary: string } }> } }>;
+    const seedStep = stepComplete.find((event) => event.data.stepIndex === 0);
+    expect(seedStep).toBeDefined();
+    expect(seedStep!.data.toolExecutions).toHaveLength(1);
+    expect(seedStep!.data.toolExecutions[0]?.name).toBe('subagent_spawn');
+    expect(seedStep!.data.toolExecutions[0]?.result.summary).toBe('child first-turn answer.');
+
+    const parentPrompt = String(
+      (adapterMocks.submitPromptStreaming.mock.calls[1]?.[0] as { prompt?: string }).prompt ?? '',
+    );
+    expect(parentPrompt).toContain('child first-turn answer.');
+
+    // 3. AUTHORIZED PATH ONLY: the call reached executeTool bound to the run
+    // (the executor rewrites the source to agent_run); the loop completed.
+    expect(claimedSpawnCallIds).toEqual(new Set(['spawn-first-turn-1']));
+    expect(events.some((event) => event.type === 'AGENT_LOOP_COMPLETE')).toBe(true);
+    const loopComplete = events.find((event) => event.type === 'AGENT_LOOP_COMPLETE') as
+      | { data: { totalTools: number } }
+      | undefined;
+    expect(loopComplete?.data.totalTools).toBe(1);
+  });
+
+  it('the loop adapter runs its normal engine flow untouched when no first-turn spawn calls are deferred (protocol golden safety)', async () => {
+    vi.useFakeTimers();
+    adapterMocks.submitPromptStreaming.mockImplementation(
+      async (_input: unknown, handlers: { onTextChunk: (t: string) => void }) => {
+        handlers.onTextChunk('plain final answer.');
+        return { assistantText: '', responseMessageId: 55, requestMessageId: 54, finished: true };
+      },
+    );
+    const events: Array<{ type: string; data: unknown }> = [];
+    const executeTool = vi.fn(async () => {
+      throw new Error('no tool calls expected');
+    });
+    const run = runInlineAgentLoop(
+      {
+        loopId: 'loop-no-seeds',
+        chatSessionId: 'chat-1',
+        parentMessageId: 100,
+        originalPrompt: 'plain task',
+        agentTaskPrompt: 'plain task',
+        toolExecutions: [],
+        promptOptions: { modelType: null, searchEnabled: false, thinkingEnabled: false, refFileIds: [] },
+        toolDescriptors: [],
+        locale: 'en',
+      },
+      {
+        post: (type, data) => events.push({ type, data }),
+        executeTool,
+        signal: new AbortController().signal,
+      },
+    );
+    await vi.advanceTimersByTimeAsync(7_000);
+    await run;
+
+    expect(executeTool).not.toHaveBeenCalled();
+    // No synthetic step-0: the first STEP_STARTED is the engine's own first
+    // turn (no preceding seed step), no tool was detected, and the final
+    // STEP_COMPLETE carries zero tool executions (text-only resolution).
+    const firstEvent = events[0] as { type: string } | undefined;
+    expect(firstEvent?.type).toBe('AGENT_STEP_STARTED');
+    expect(events.some((event) => event.type === 'AGENT_TOOL_DETECTED')).toBe(false);
+    const stepComplete = events.find((event) => event.type === 'AGENT_STEP_COMPLETE') as
+      | { data: { stepIndex: number; toolExecutions: unknown[] } }
+      | undefined;
+    expect(stepComplete?.data.stepIndex).toBe(0);
+    expect(stepComplete?.data.toolExecutions).toEqual([]);
+    expect(events.some((event) => event.type === 'AGENT_LOOP_COMPLETE')).toBe(true);
   });
 });

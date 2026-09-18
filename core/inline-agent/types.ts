@@ -41,6 +41,18 @@ export interface InlineAgentStartPayload {
    * this flag never forks the loop implementation.
    */
   subagentChildTask?: boolean;
+  /**
+   * Subagent_spawn calls parsed on the NATIVE trigger turn (first-turn
+   * subagent access, pc directive). content.ts intercepts the spawn call
+   * before the manual execution path and hands the CALL here instead; the
+   * loop executes each one as its STEP 0 through the SAME authorized
+   * `executeTool` closure (spawn routing → child runner + claim), so the
+   * model receives the child outcome as its own tool result in the first
+   * continuation request. IN-MEMORY ONLY — never persisted and never an
+   * AGENT_* event beyond the existing step/tool events. Absent on every
+   * other loop start.
+   */
+  firstTurnSpawnCalls?: ToolCall[];
 }
 
 export interface InlineAgentPromptOptions {

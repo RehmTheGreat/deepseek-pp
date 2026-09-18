@@ -110,6 +110,8 @@ export const content = {
     subagentStatusDetail: 'Subagent run {status} · {steps} steps · {tools} tool calls',
     subagentNoFinalText: 'The subagent run completed without returning text.',
     subagentUnavailable: 'The subagent tool is not available in this run.',
+    subagentDeferred: 'Queued: the subagent runs first in the agent session.',
+    subagentDeferAbandoned: 'Subagent run could not start: the agent session did not start for this turn.',
   },
   permission: {
     webFetch: 'DeepSeek++ needs permission to access {origin} so it can fetch that page',
