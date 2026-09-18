@@ -51,7 +51,7 @@ const CAPTURED_DROP_WIRE = [
 function makeShellDescriptor(): ToolDescriptor {
   return {
     id: 'mcp:shell-local:shell_exec',
-    provider: { kind: 'mcp', id: 'mcp:shell-local', displayName: 'shell', transport: 'mcp' },
+    provider: { kind: 'local', id: 'local:shell', displayName: 'shell', transport: 'in_process' },
     name: 'shell_exec',
     invocationName: 'shell_exec',
     title: 'shell_exec',
