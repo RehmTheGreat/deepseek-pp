@@ -27,6 +27,7 @@ import {
   MCP_SUPPORTED_PROTOCOL_VERSIONS,
 } from './constants';
 import { createMcpDescriptorId, createMcpInvocationName } from './descriptor-identity';
+import { stripAnsiEscapeSequences, stripAnsiInDepth, validateMcpToolCallArguments } from './call-guards';
 import { isShellMcpServer } from '../shell/policy';
 
 const CLIENT_NAME = 'DeepSeek++';
@@ -175,6 +176,30 @@ export async function callMcpTool(
   // Shell 专用续读路径，其结果形状不匹配从而 fail-closed（ok:false）。
   if (mcpToolName === 'local_file_read' && isShellMcpServer(server)) {
     return callLocalFileReadAuto(server, transport, options);
+  }
+
+  // Wave-2 hardening: an empty/insufficient arguments body is refused HERE,
+  // with the structured retryable channel, instead of being dispatched to the
+  // provider and rejected there (prober finding: python_exec reached the
+  // executor with arguments {}).
+  const argumentsCheck = validateMcpToolCallArguments(options.call.payload, options.descriptor);
+  if (!argumentsCheck.ok) {
+    return {
+      ok: false,
+      summary: 'MCP 工具调用失败',
+      detail: argumentsCheck.message,
+      name: options.call.name,
+      provider: options.call.provider,
+      descriptorId: options.call.descriptorId,
+      startedAt,
+      completedAt: Date.now(),
+      durationMs: Date.now() - startedAt,
+      error: {
+        code: 'mcp_tool_call_arguments_invalid',
+        message: argumentsCheck.message,
+        retryable: true,
+      },
+    };
   }
 
   try {
@@ -503,10 +528,14 @@ function normalizeMcpToolResult(
   maxResultBytes: number | undefined,
 ): ToolResult {
   const completedAt = Date.now();
-  const output = normalizeToolOutput(result);
+  // Wave-2: terminal escape codes (ANSI colors etc.) are stripped once at
+  // this boundary so the model and the work-log row receive clean text.
+  const output = stripAnsiInDepth(normalizeToolOutput(result));
   const rendered = stringifyOutput(output);
   const limit = maxResultBytes ?? server.limits.maxResultBytes;
-  const detailSource = result.isError ? extractMcpErrorMessage(result, rendered) : rendered;
+  const detailSource = result.isError
+    ? stripAnsiEscapeSequences(extractMcpErrorMessage(result, rendered))
+    : rendered;
   const detailProjection = truncateUtf8ToByteLimit(detailSource, limit);
   const detail = detailProjection.value;
 
