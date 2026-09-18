@@ -42,7 +42,16 @@ export function getAssistantMessageOwnText(message: Element): string {
 }
 
 function normalizeAnchorText(value: string | undefined): string {
-  return (value ?? '').replace(/\s+/g, '').trim();
+  // Markdown emphasis markers are stripped so RAW anchor text (as captured
+  // from the model output / history) matches the RENDERED DOM text (2026-09-18
+  // live finding: DeepSeek's current DOM exposes no message-id attributes, so
+  // this content match is the only surviving anchor leg; backticks and
+  // asterisks disappear when the site renders the markdown). Both sides are
+  // normalized identically, so no false positives are introduced.
+  return (value ?? '')
+    .replace(/[`*]/g, '')
+    .replace(/\s+/g, '')
+    .trim();
 }
 
 /**

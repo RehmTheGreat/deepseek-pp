@@ -8124,6 +8124,7 @@ function scheduleRenderRestoredInlineAgentTraces() {
 
 function renderRestoredInlineAgentTraces(): number {
   injectInlineAgentStyles();
+  ensureStrippedToolCallNotes();
 
   const messages = getAssistantMessages();
   if (messages.length === 0) return pendingRestoredInlineAgentTraceIds.size;
@@ -8679,13 +8680,21 @@ function cleanRenderedToolCalls() {
  * the message the mutation hub re-runs this and the note re-mounts.
  */
 function ensureStrippedToolCallNote(root: Element): void {
-  if (!(root instanceof HTMLElement) || !root.classList.contains("ds-message")) {
-    return;
+  if (root instanceof HTMLElement && root.classList.contains("ds-message")) {
+    mountStrippedToolCallNote(root);
   }
-  if (root.querySelector('[data-dpp-stripped-note="true"]')) return;
-  const hosts = getAssistantContentHosts(root);
-  if (hosts.length === 0) return;
-  if (hosts.some((host) => (host.textContent ?? "").trim().length > 0)) return;
+}
+
+/**
+ * Mounts the placeholder into one message unless it is already noted or has
+ * visible content of its own. Host-less messages (the history-stripped case:
+ * DeepSeek never rendered a content host for a message whose payload was
+ * emptied before render) host the note on the message element itself.
+ */
+function mountStrippedToolCallNote(message: HTMLElement): void {
+  if (message.querySelector('[data-dpp-stripped-note="true"]')) return;
+  if ((message.textContent ?? "").trim().length > 0) return;
+  const hosts = getAssistantContentHosts(message);
   const note = document.createElement("div");
   note.className = "dpp-stripped-tool-call-note";
   note.setAttribute("data-dpp-stripped-note", "true");
@@ -8693,7 +8702,30 @@ function ensureStrippedToolCallNote(root: Element): void {
   note.style.color = "var(--dpp-ui-text-muted)";
   note.style.fontSize = "var(--dpp-ui-font-chrome, 12px)";
   note.style.padding = "2px 0";
-  hosts[0].appendChild(note);
+  (hosts[0] ?? message).appendChild(note);
+}
+
+/**
+ * Render-pass scan for messages emptied at the DATA level (live finding,
+ * 2026-09-18 smoke): history-cleanup strips the tool markup from the history
+ * payload BEFORE React renders, so those messages never contain tool text
+ * (the scrubber pass never runs) and never grow a content host
+ * (getAssistantContentHosts-based lists never see them). A host-less,
+ * text-less, non-hidden .ds-message is exactly such a bubble; the
+ * restored-render pass calls this so every virtual-list mount re-checks.
+ */
+function ensureStrippedToolCallNotes(): void {
+  for (const message of Array.from(
+    document.querySelectorAll(".ds-message"),
+  )) {
+    if (!(message instanceof HTMLElement)) continue;
+    if (message.hasAttribute("data-dpp-hidden-inline-agent-continuation")) {
+      continue;
+    }
+    if (getAssistantContentHosts(message).length === 0) {
+      mountStrippedToolCallNote(message);
+    }
+  }
 }
 
 function startInlineAgentContinuationMessageHider(

@@ -54,6 +54,21 @@ describe('findAssistantMessageByContentSnippet (Issue #551 follow-up)', () => {
     ).toBe(fresh);
   });
 
+  it('matches raw-markdown anchor content against the rendered DOM text (2026-09-18 live finding)', () => {
+    // Live finding: DeepSeek's current DOM no longer exposes message-id
+    // attributes, so content matching is the only remaining anchor leg, and
+    // the DOM renders markdown WITHOUT the emphasis markers the raw anchor
+    // content still carries. The matcher must normalize both sides the same
+    // way or the restored console never mounts.
+    const rawAnchor = 'Yes - `subagent_spawn` is in my current tool manifest. Testing it now with the exact task and prompt you specified.';
+    const rendered = buildMessage('Yes - subagent_spawn is in my current tool manifest. Testing it now with the exact task and prompt you specified.');
+    expect(findAssistantMessageByContentSnippet([rendered], rawAnchor, new Set())).toBe(rendered);
+
+    const rawBold = 'The command **echo fx2-t0-1** executed successfully via pwsh.exe, exit code 0.';
+    const renderedBold = buildMessage('The command echo fx2-t0-1 executed successfully via pwsh.exe, exit code 0.');
+    expect(findAssistantMessageByContentSnippet([renderedBold], rawBold, new Set())).toBe(renderedBold);
+  });
+
   it('returns null for snippets shorter than 12 normalized chars', () => {
     const message = buildMessage('短文本');
     expect(findAssistantMessageByContentSnippet([message], '短文本', new Set())).toBeNull();
