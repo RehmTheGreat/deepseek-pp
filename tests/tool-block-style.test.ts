@@ -180,8 +180,8 @@ describe('content tool block styles', () => {
     const zh = readFileSync(join(process.cwd(), 'core/i18n/resources/zh-CN/content.ts'), 'utf8');
     const en = readFileSync(join(process.cwd(), 'core/i18n/resources/en/content.ts'), 'utf8');
 
-    expect(zh).toContain("toolGroup: '已调用 {count} 次工具'");
-    expect(en).toContain("toolGroup: 'Ran {count} tool calls'");
+    expect(zh).toContain("toolGroup: '已调用 {count} {toolUnit}'");
+    expect(en).toContain("toolGroup: 'Ran {count} {toolUnit}'");
     expect(zh).toContain("codeRun: '运行'");
     expect(en).toContain("codeRun: 'Run'");
   });
