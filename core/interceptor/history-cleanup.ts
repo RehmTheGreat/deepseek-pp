@@ -379,7 +379,60 @@ function findLightweightToolBlocks(
     nonOverlapping.push(block);
     cursor = block.end;
   }
-  return nonOverlapping;
+
+  return withOrphanClosingTagBlocks(text, nonOverlapping, catalog);
+}
+
+/**
+ * Orphan closing tags (D1, 2026-09-19): a duplicated closing tag whose
+ * well-formed pair was already consumed survives extraction as bare text.
+ * After the paired blocks are settled, scan the residual ranges for closing
+ * tags of advertised/family names and drop them the same way. They carry no
+ * invocation names, so the restore-record builder skips them.
+ */
+function withOrphanClosingTagBlocks(
+  text: string,
+  accepted: LightweightToolBlock[],
+  catalog: ToolInvocationCatalog,
+): LightweightToolBlock[] {
+  const blocks = [...accepted];
+  const ranges = [...accepted].sort((a, b) => a.start - b.start);
+  const insideAccepted = (start: number, end: number) =>
+    ranges.some((block) => start >= block.start && end <= block.end);
+  const pushOrphan = (start: number, end: number) => {
+    if (insideAccepted(start, end)) return;
+    blocks.push({ start, end, invocationNames: [], complete: false });
+  };
+
+  let searchFrom = 0;
+  for (;;) {
+    const close = findFirstXmlToolTag(text, orphanCloseNames(catalog), { closing: true, fromIndex: searchFrom });
+    if (!close) break;
+    pushOrphan(close.index, close.endIndex);
+    searchFrom = close.endIndex;
+  }
+
+  searchFrom = 0;
+  for (;;) {
+    const close = findDsmlTag(
+      text,
+      searchFrom,
+      (tag) => tag.closing && ORPHAN_CLOSE_FAMILY_NAMES.has(tag.name),
+    );
+    if (!close) break;
+    pushOrphan(close.index, close.endIndex);
+    searchFrom = close.endIndex;
+  }
+
+  return blocks.sort((a, b) => a.start - b.start || b.end - a.end);
+}
+
+const ORPHAN_CLOSE_FAMILY_NAMES = new Set(['invoke', 'tool_calls', 'calls']);
+
+function orphanCloseNames(catalog: ToolInvocationCatalog): Set<string> {
+  const names = new Set(catalog.invocationNames);
+  for (const familyName of ORPHAN_CLOSE_FAMILY_NAMES) names.add(familyName);
+  return names;
 }
 
 function findXmlToolBlocks(

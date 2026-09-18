@@ -1379,6 +1379,42 @@ export class XmlToolStreamFilter {
       return;
     }
 
+    const orphanClose = this.findFirstOrphanToolClose(this.pendingText);
+    if (orphanClose) {
+      // Emit the text before the orphan closer, suppress the closer itself,
+      // and reprocess the tail (blank lines after it collapse like the ones
+      // after a stripped tool block).
+      this.emitBlocksBeforeOpen(controller, orphanClose.index);
+      this.pendingBlocks = [];
+      this.pendingText = "";
+      this.stripTailLeadingNewlines = true;
+      const tailOffsetInCurrentText =
+        orphanClose.endIndex - previousPendingLength;
+      const toolTail = this.getCurrentToolTail(
+        parsed,
+        text,
+        isFragmentCreation,
+        tailOffsetInCurrentText,
+        sourceFrame,
+      );
+      if (toolTail) {
+        this.processNormalTextBlock(
+          controller,
+          toolTail.block,
+          toolTail.separator,
+          toolTail.sourceFrame,
+          toolTail.parsed,
+          toolTail.text,
+          toolTail.isFragmentCreation,
+        );
+      }
+      return;
+    }
+
+    if (this.couldBePartialToolClose(this.pendingText)) {
+      return;
+    }
+
     if (this.couldBePartialToolOpen(this.pendingText)) {
       return;
     }
@@ -1593,6 +1629,44 @@ export class XmlToolStreamFilter {
     return (
       getPartialXmlToolTagTailLength(text, this.toolInvocationNameSet, {
         closing: false,
+      }) > 0
+      || getDsmlShapeTailLength(text) > 0
+    );
+  }
+
+  /**
+   * Orphan closing tag (D1, 2026-09-19): a closing tag of an advertised tool
+   * (or the invoke/calls DSML family, any bar shape) encountered in the
+   * NORMAL state - its opener was consumed as part of a suppressed block
+   * (the model double-closes tags), so the closer is leftover junk and is
+   * suppressed like the rest of the block instead of rendering raw.
+   */
+  private findFirstOrphanToolClose(
+    text: string,
+  ): { index: number; endIndex: number } | null {
+    const xml = findFirstXmlToolTag(text, this.toolInvocationNameSet, {
+      closing: true,
+    });
+    const dsml = findDsmlTag(
+      text,
+      0,
+      (tag) =>
+        tag.closing
+          && (tag.name === "tool_calls" || tag.name === "calls" || tag.name === "invoke"),
+    );
+    if (xml && (!dsml || xml.index <= dsml.index)) {
+      return { index: xml.index, endIndex: xml.endIndex };
+    }
+    if (dsml) {
+      return { index: dsml.index, endIndex: dsml.endIndex };
+    }
+    return null;
+  }
+
+  private couldBePartialToolClose(text: string): boolean {
+    return (
+      getPartialXmlToolTagTailLength(text, this.toolInvocationNameSet, {
+        closing: true,
       }) > 0
       || getDsmlShapeTailLength(text) > 0
     );

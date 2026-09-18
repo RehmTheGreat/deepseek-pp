@@ -93,9 +93,15 @@ class ToolTextAccumulator implements StreamingToolTextAccumulator {
 
     const found = this.findFirstOpenTag(text);
     if (!found) {
+      const orphanClose = this.findFirstOrphanCloseTag(text);
+      if (orphanClose) {
+        if (orphanClose.index > 0) this.visibleText += text.slice(0, orphanClose.index);
+        return text.slice(orphanClose.endIndex);
+      }
       const xmlTailLength = getPartialXmlToolTagTailLength(text, this.xmlTargetNames, { closing: false });
+      const closeTailLength = getPartialXmlToolTagTailLength(text, this.xmlTargetNames, { closing: true });
       const dsmlTailLength = getDsmlShapeTailLength(text);
-      const tailLength = Math.max(xmlTailLength, dsmlTailLength);
+      const tailLength = Math.max(xmlTailLength, closeTailLength, dsmlTailLength);
       const emitLength = text.length - tailLength;
       if (emitLength > 0) this.visibleText += text.slice(0, emitLength);
       this.pendingNormal = tailLength > 0 ? text.slice(-tailLength) : '';
@@ -151,6 +157,28 @@ class ToolTextAccumulator implements StreamingToolTextAccumulator {
     this.state = 'NORMAL';
     this.currentTarget = null;
     return text.slice(closeMatch.endIndex);
+  }
+
+  /**
+   * Orphan closing tag (D1, 2026-09-19): a closing tag of an advertised tool
+   * or of the invoke/calls DSML family in NORMAL state - its opener was
+   * consumed with its block, so the closer is junk and is suppressed.
+   */
+  private findFirstOrphanCloseTag(text: string): {
+    index: number;
+    endIndex: number;
+  } | null {
+    const xmlClose = findFirstXmlToolTag(text, this.xmlTargetNames, { closing: true });
+    const dsmlClose = findDsmlTag(
+      text,
+      0,
+      (tag) => tag.closing && (tag.name === 'tool_calls' || tag.name === 'calls' || tag.name === 'invoke'),
+    );
+    if (xmlClose && (!dsmlClose || xmlClose.index <= dsmlClose.index)) {
+      return { index: xmlClose.index, endIndex: xmlClose.endIndex };
+    }
+    if (dsmlClose) return { index: dsmlClose.index, endIndex: dsmlClose.endIndex };
+    return null;
   }
 
   private findFirstOpenTag(text: string): {

@@ -4,7 +4,7 @@ import {
   TASK_COMPLETE_BLOCK_RE,
 } from './prompt';
 import { stripRetiredArtifactProtocolBlocks } from './retired-artifact';
-import { stripToolCalls } from '../interceptor/tool-parser';
+import { stripOrphanClosingTags, stripToolCalls } from '../interceptor/tool-parser';
 import { withInlineAgentSpawnDisplayDescriptor } from './subagent-tool';
 import type { ToolDescriptor } from '../types';
 
@@ -170,10 +170,13 @@ export function getInlineAgentDisplayFinalText(
   // Display stripping recognizes every advertised tool including
   // subagent_spawn (strip symmetry, Defect 3): the base catalog never lists
   // it, but native turns advertise it through merged grants.
+  const displayDescriptors = withInlineAgentSpawnDisplayDescriptor(descriptors);
   const withoutToolCalls = stripToolCalls(withoutRetiredProtocol, {
-    descriptors: withInlineAgentSpawnDisplayDescriptor(descriptors),
+    descriptors: displayDescriptors,
   });
-  return getInlineAgentAnswerText(withoutToolCalls);
+  return getInlineAgentAnswerText(
+    stripOrphanClosingTags(withoutToolCalls, { descriptors: displayDescriptors }),
+  );
 }
 
 /**
@@ -187,8 +190,11 @@ export function getInlineAgentDisplayStepText(
 ): string {
   const withoutRetiredProtocol = stripRetiredArtifactProtocolBlocks(text);
   // Same display-strip recognition set as the final text above.
+  const displayDescriptors = withInlineAgentSpawnDisplayDescriptor(descriptors);
   const withoutToolCalls = stripToolCalls(withoutRetiredProtocol, {
-    descriptors: withInlineAgentSpawnDisplayDescriptor(descriptors),
+    descriptors: displayDescriptors,
   });
-  return getInlineAgentProcessText(withoutToolCalls);
+  return getInlineAgentProcessText(
+    stripOrphanClosingTags(withoutToolCalls, { descriptors: displayDescriptors }),
+  );
 }

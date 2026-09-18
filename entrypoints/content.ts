@@ -637,6 +637,7 @@ let agentConsoleElapsedSeconds = 0;
 let agentConsoleTimer: ReturnType<typeof setInterval> | null = null;
 const pendingInlineAgentLoopTasks = new Set<Promise<void>>();
 let toolOpenTagRe = buildToolOpenTagRegex(currentToolDescriptors);
+let toolCloseTagRe = buildToolCloseTagRegex(currentToolDescriptors);
 let toolMarkerRe = buildToolMarkerRegex(currentToolDescriptors);
 let extensionContextValid = true;
 let contentDocumentLifecycle: ContentDocumentLifecycle | null = null;
@@ -689,6 +690,13 @@ function refreshLocalizedContentSurfaces(): void {
 }
 
 function getAgentRendererLabels() {
+  // O3 (wave 3): counts pluralize - "1 step"/"2 steps", "1 tool call"/
+  // "3 tool calls" - via the unit keys; zh units have a single form.
+  const unit = (
+    oneKey: Parameters<typeof contentT>[0],
+    manyKey: Parameters<typeof contentT>[0],
+    count: number,
+  ) => contentT(count === 1 ? oneKey : manyKey);
   return {
     starting: contentT("content.agent.starting"),
     stop: contentT("content.agent.stop"),
@@ -696,6 +704,7 @@ function getAgentRendererLabels() {
       contentT("content.agent.running", {
         step: stepNumber + 1,
         tools: toolCount,
+        toolUnit: unit("content.agent.toolUnitOne", "content.agent.toolUnitMany", toolCount),
         seconds: elapsedSeconds,
       }),
     toolOk: contentT("content.toolBlock.summaries.executed"),
@@ -707,7 +716,9 @@ function getAgentRendererLabels() {
     ) =>
       contentT("content.agent.consoleComplete", {
         steps: totalSteps,
+        stepUnit: unit("content.agent.stepUnitOne", "content.agent.stepUnitMany", totalSteps),
         tools: totalTools,
+        toolUnit: unit("content.agent.toolUnitOne", "content.agent.toolUnitMany", totalTools),
         seconds: elapsedSeconds,
       }),
     consolePaused: (
@@ -717,7 +728,9 @@ function getAgentRendererLabels() {
     ) =>
       contentT("content.agent.consolePaused", {
         steps: totalSteps,
+        stepUnit: unit("content.agent.stepUnitOne", "content.agent.stepUnitMany", totalSteps),
         tools: totalTools,
+        toolUnit: unit("content.agent.toolUnitOne", "content.agent.toolUnitMany", totalTools),
         seconds: elapsedSeconds,
       }),
     consoleError: (
@@ -727,11 +740,16 @@ function getAgentRendererLabels() {
     ) =>
       contentT("content.agent.consoleError", {
         steps: totalSteps,
+        stepUnit: unit("content.agent.stepUnitOne", "content.agent.stepUnitMany", totalSteps),
         tools: totalTools,
+        toolUnit: unit("content.agent.toolUnitOne", "content.agent.toolUnitMany", totalTools),
         seconds: elapsedSeconds,
       }),
     toolGroup: (count: number) =>
-      contentT("content.agent.toolGroup", { count }),
+      contentT("content.agent.toolGroup", {
+        count,
+        toolUnit: unit("content.agent.toolUnitOne", "content.agent.toolUnitMany", count),
+      }),
     reasoningStep: (stepNumber: number) =>
       contentT("content.agent.reasoningStep", { step: stepNumber + 1 }),
     reasoningNotPersisted: contentT("content.agent.reasoningNotPersisted"),
@@ -6862,6 +6880,7 @@ function syncToMainWorld(
   currentSkillAutoActivation =
     normalizeSkillAutoActivationSettings(skillAutoActivation);
   toolOpenTagRe = buildToolOpenTagRegex(toolDescriptors);
+  toolCloseTagRe = buildToolCloseTagRegex(toolDescriptors);
   toolMarkerRe = buildToolMarkerRegex(toolDescriptors);
   const fallbackPromptDescriptors = toolDescriptors.filter(
     (descriptor) => !isMcpCapabilityDescriptor(descriptor),
@@ -6931,6 +6950,11 @@ function reportToolDescriptorSyncFailure(error: unknown): void {
 function buildToolOpenTagRegex(descriptors: ToolDescriptor[]): RegExp {
   const pattern = buildToolTagPattern(descriptors);
   return new RegExp(`<\\s*(${pattern})\\s*>`, "i");
+}
+
+function buildToolCloseTagRegex(descriptors: ToolDescriptor[]): RegExp {
+  const pattern = buildToolTagPattern(descriptors);
+  return new RegExp(`<\s*/\s*(${pattern})\s*>`, "i");
 }
 
 function buildToolMarkerRegex(descriptors: ToolDescriptor[]): RegExp {
@@ -8985,6 +9009,24 @@ function stripToolCallTextNodes(root: Element) {
 
       const openMatch = toolOpenTagRe.exec(sanitizedOriginal.slice(cursor));
       if (!openMatch) {
+        // Orphan closing tag (D1): a `</tool>` whose opener was consumed by
+        // an earlier extraction pass. Junk - suppress it silently, like the
+        // delimiter corrections, without touching anything else.
+        const orphanClose = toolCloseTagRe.exec(sanitizedOriginal.slice(cursor));
+        if (orphanClose) {
+          let beforeClose = sanitizedOriginal.slice(
+            cursor,
+            cursor + orphanClose.index,
+          );
+          if (stripTailLeadingNewlines) {
+            beforeClose = beforeClose.replace(/^\n+/, "");
+            stripTailLeadingNewlines = false;
+          }
+          next += beforeClose;
+          stripTailLeadingNewlines = /\n$/.test(next) || lastNodeEndsWithNewline;
+          cursor += orphanClose[0].length;
+          continue;
+        }
         let rest = sanitizedOriginal.slice(cursor);
         if (stripTailLeadingNewlines) {
           rest = rest.replace(/^\n+/, "");

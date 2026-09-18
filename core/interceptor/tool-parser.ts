@@ -527,6 +527,51 @@ export function stripToolCalls(text: string, input?: ToolParsingInput): string {
   return removeBlocks(withoutXml, collectLegacyToolCallBlocks(withoutXml)).trim();
 }
 
+/**
+ * Closing-tag family for orphan stripping (D1, 2026-09-19): advertised tool
+ * names plus the DSML wrapper/invoke family, whose closers appear in every
+ * bar shape through the shared scanner.
+ */
+const ORPHAN_CLOSE_FAMILY_NAMES = new Set(['invoke', 'tool_calls', 'calls']);
+
+/**
+ * Strips ORPHAN closing tags: closing tags of advertised tool names (and the
+ * invoke/calls DSML family, in any bar shape) that remain in the text after
+ * well-formed tool blocks were extracted. The model double-closes tags often
+ * enough (live: 5 of 5 tool turns on 2026-09-19) that the leftover
+ * `</tool>` renders as raw markup in bubbles, step bodies, and restored
+ * history. A paired closer can never survive the extraction leg, so any
+ * closing tag found here is leftover junk and is removed silently - the
+ * executed tool result is the feedback (same policy as
+ * tool_call_delimiter_corrected: corrected junk is suppressed, no lecture).
+ * Linear scans only.
+ */
+export function stripOrphanClosingTags(text: string, input?: ToolParsingInput): string {
+  if (!text) return text;
+  const catalog = createToolInvocationCatalog(input?.descriptors);
+  const closeNames = new Set(catalog.invocationNames);
+  for (const familyName of ORPHAN_CLOSE_FAMILY_NAMES) closeNames.add(familyName);
+
+  let result = '';
+  let cursor = 0;
+  for (;;) {
+    const xmlClose = findFirstXmlToolTag(text, closeNames, { closing: true, fromIndex: cursor });
+    const dsmlClose = findDsmlTag(
+      text,
+      cursor,
+      (tag) => tag.closing && ORPHAN_CLOSE_FAMILY_NAMES.has(tag.name),
+    );
+    if (!xmlClose && !dsmlClose) break;
+    const useXml = xmlClose && (!dsmlClose || xmlClose.index <= dsmlClose.index);
+    const match = useXml ? xmlClose : dsmlClose;
+    const endIndex = match!.endIndex;
+    result += text.slice(cursor, match!.index);
+    cursor = endIndex;
+  }
+  result += text.slice(cursor);
+  return result;
+}
+
 export function replaceToolCallsWithSummary(text: string, input?: ToolParsingInput): string {
   const catalog = createToolInvocationCatalog(input?.descriptors);
   const withXmlSummary = replaceBlocksWithSummaries(
