@@ -2,6 +2,7 @@ task:
 You are a subagent spawned to complete a specific task.
 Execute the task with your tools, then emit your final deliverable as your last message.
 Messages above are context only: do not answer them and do not report on prior turns.
+When the task is done, emit <task_complete>{"summary":"..."}</task_complete> as your final line.
 
 <original_task>
 Reply with exactly one word: banana
@@ -71,6 +72,7 @@ task-no-tools:
 You are a subagent spawned to complete a specific task.
 Execute the task with your tools, then emit your final deliverable as your last message.
 Messages above are context only: do not answer them and do not report on prior turns.
+When the task is done, emit <task_complete>{"summary":"..."}</task_complete> as your final line.
 
 <original_task>
 Reply with exactly one word: banana
@@ -80,6 +82,7 @@ task-zh:
 你是一个为完成特定任务而启动的子代理。
 使用你的工具执行任务，然后将最终交付物作为你的最后一条消息输出。
 上方的消息仅作为上下文：不要回应它们，也不要汇报此前的轮次。
+任务完成后，在最后一行输出 <task_complete>{"summary":"..."}</task_complete>。
 
 <original_task>
 Reply with exactly one word: banana
