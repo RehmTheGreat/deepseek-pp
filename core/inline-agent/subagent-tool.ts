@@ -97,6 +97,23 @@ export function withInlineAgentSubagentSpawnDescriptor(
   return [...descriptors, spawn];
 }
 
+/**
+ * Display-strip counterpart of {@link withInlineAgentSubagentSpawnDescriptor}
+ * (Defect 3, 2026-09-18): the shared tool catalog deliberately never carries
+ * the spawn descriptor (source composition stays spawn-free), yet native
+ * turns DO advertise and execute `subagent_spawn` through the merged
+ * authorization grants. Display surfaces that strip recognized tool-call
+ * markup (history restore, DOM scrub, agent narration) must therefore
+ * recognize exactly what the extension advertises: catalog tools PLUS the
+ * spawn descriptor. Strip symmetry: recognize == strip; content that matches
+ * no advertised tool is never stripped.
+ */
+export function withInlineAgentSpawnDisplayDescriptor(
+  descriptors: readonly ToolDescriptor[],
+): ToolDescriptor[] {
+  return withInlineAgentSubagentSpawnDescriptor(descriptors);
+}
+
 /** Narrow claim shape of a parsed model tool call (name is required). */
 export interface InlineAgentSpawnCallClaim {
   name: string;

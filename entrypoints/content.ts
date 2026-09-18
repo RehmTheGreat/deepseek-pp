@@ -87,6 +87,7 @@ import {
   describeInlineAgentSubagentSpawnResult,
   isInlineAgentSubagentSpawnCall,
   parseInlineAgentSubagentSpawnPayload,
+  withInlineAgentSpawnDisplayDescriptor,
   withInlineAgentSubagentSpawnDescriptor,
 } from "../core/inline-agent/subagent-tool";
 import type { DeepSeekSessionState } from "../core/inline-agent/pi/stream-fn-port";
@@ -6934,7 +6935,13 @@ function buildToolMarkerRegex(descriptors: ToolDescriptor[]): RegExp {
 }
 
 function buildToolTagPattern(descriptors: ToolDescriptor[]): string {
-  const catalogNames = createToolInvocationCatalog(descriptors).invocationNames;
+  // The scrub regexes recognize every ADVERTISED tool: the shared catalog
+  // never lists subagent_spawn, but native turns advertise and execute it
+  // through merged grants, so rendered spawn markup must strip too (Defect 3,
+  // 2026-09-18). Strip symmetry: recognize == strip.
+  const catalogNames = createToolInvocationCatalog(
+    withInlineAgentSpawnDisplayDescriptor(descriptors),
+  ).invocationNames;
   const escaped = [...new Set(catalogNames)].map(escapeRegExp);
   return escaped.length > 0 ? escaped.join("|") : "(?!)";
 }

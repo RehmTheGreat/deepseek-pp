@@ -17,6 +17,7 @@ import {
 } from '../tool';
 import { findFirstXmlToolTag } from '../tool/xml-tags';
 import { extractToolCalls } from './tool-parser';
+import { withInlineAgentSpawnDisplayDescriptor } from '../inline-agent/subagent-tool';
 import { findDsmlTag, findNextDsmlToolBlock } from './dsml-delimiters';
 
 const RESTORE_FULL_PARSE_MAX_LENGTH = 120_000;
@@ -89,6 +90,12 @@ function stripMessageToolCalls(
   restoredRecords: ToolCallRestoreRecord[],
   toolDescriptors: readonly ToolDescriptor[],
 ) {
+  // Display-strip recognition covers every ADVERTISED tool: the shared
+  // catalog never carries subagent_spawn (spawn-free source composition), but
+  // native turns advertise and execute it through merged grants, so restored
+  // history must strip it too (Defect 3, 2026-09-18). Strip symmetry:
+  // recognize == strip, nothing else is removed.
+  const stripDescriptors = withInlineAgentSpawnDisplayDescriptor(toolDescriptors);
   const visibleMessages = messages.filter((msg: any) => !isRemovableInternalManagedAgentMessage(msg));
   if (visibleMessages.length !== messages.length) {
     messages.splice(0, messages.length, ...visibleMessages);
@@ -101,23 +108,23 @@ function stripMessageToolCalls(
     const shouldRestoreToolCalls = !replaceTaskComplete;
     sanitizeInlineAgentContinuationMessage(msg);
     sanitizeStoredMessageInternalPrompt(msg, { replaceTaskComplete });
-    const hasStoredToolCall = storedMessageHasToolCallMarker(msg, toolDescriptors);
+    const hasStoredToolCall = storedMessageHasToolCallMarker(msg, stripDescriptors);
     const isAssistant = isAssistantStoredMessage(msg) || hasStoredToolCall;
     const currentAssistantMessageIndex = isAssistant ? assistantMessageIndex++ : null;
     const metadata = createMessageRestoreMetadata(msg, index, currentAssistantMessageIndex);
     const messageKey = getMessageRestoreKey(msg, index);
-    if (typeof msg.content === 'string' && hasToolCallMarker(msg.content, toolDescriptors)) {
+    if (typeof msg.content === 'string' && hasToolCallMarker(msg.content, stripDescriptors)) {
       if (shouldRestoreToolCalls) {
         const record = collectToolCallRestoreRecord(msg.content, `${messageKey}:content`, toolDescriptors, metadata);
         if (record) restoredRecords.push(record);
       }
-      msg.content = stripToolCallsForHistoryText(msg.content, toolDescriptors);
+      msg.content = stripToolCallsForHistoryText(msg.content, stripDescriptors);
     }
     stripFragmentToolCalls(
       msg.fragments,
       messageKey,
       restoredRecords,
-      toolDescriptors,
+      stripDescriptors,
       metadata,
       shouldRestoreToolCalls,
     );
