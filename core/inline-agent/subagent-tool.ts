@@ -260,12 +260,16 @@ export function describeInlineAgentSubagentSpawnResult(
 
   if (result.ok) {
     // Consume the taught `<task_complete>` signal out of the deliverable
-    // (Defect 4 + O2, 2026-09-19): the machine wrapper must never leak into
-    // the parent's tool result or the console row. When the signal carries a
-    // summary, that summary IS the deliverable - the surrounding text is not
-    // appended a second time. A block without a usable summary (and a
+    // (Defect 4 + O2, 2026-09-19; precedence corrected the same day): the
+    // body text is what the child actually answered, so it IS the
+    // deliverable and is stated exactly once. The machine summary is
+    // metadata: it is the FALLBACK deliverable only when the stripped body
+    // is empty (a wrapper-only final text from a child taught to put the
+    // deliverable in the summary). A block without a usable summary (and a
     // malformed block) degrades to the text minus the wrapper tags; the
     // inner text is kept so nothing but the control tags disappears.
+    // Preferring the summary over a non-empty body is what emptied the four
+    // live G2 payloads (limerick bodies dropped for meta-summaries).
     let summary = '';
     const strippedBody = result.finalText.replace(
       TASK_COMPLETE_BLOCK_RE,
@@ -283,7 +287,7 @@ export function describeInlineAgentSubagentSpawnResult(
         return inner;
       },
     );
-    const deliverable = (summary || strippedBody).trim();
+    const deliverable = (strippedBody.trim() || summary).trim();
     return {
       ok: true,
       summary:

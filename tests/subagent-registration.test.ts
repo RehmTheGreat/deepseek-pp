@@ -297,7 +297,7 @@ describe('spawn result to tool-result mapping (M4 wiring note 4)', () => {
     expect(described.summary.length).toBeGreaterThan(0);
   });
 
-  it('consumes the task_complete signal: the summary IS the deliverable, stated once', () => {
+  it('consumes the task_complete signal: the body IS the deliverable, stated once', () => {
     const described = describeInlineAgentSubagentSpawnResult('en', {
       ok: true,
       refused: false,
@@ -319,9 +319,61 @@ describe('spawn result to tool-result mapping (M4 wiring note 4)', () => {
     expect(described.summary).not.toContain('<task_complete>');
     expect(described.summary).not.toContain('</task_complete>');
     expect(described.summary).not.toContain('"summary"');
-    // O2 contract: the summary IS the deliverable - it is stated exactly
-    // once and the full text is not appended a second time.
-    expect(described.summary).toBe('Wrote a single 5-7-5 haiku about rain.');
+    // Deliverable-once contract (corrected 2026-09-19): the body text is what
+    // the child actually answered, so it IS the deliverable; the machine
+    // summary is metadata and must neither replace it nor be appended after
+    // it. The summary alone is only the fallback for a wrapper-only final
+    // text (children taught to put the deliverable in the summary).
+    expect(described.summary).toContain('Soft rain on the roof');
+    expect(described.summary).toContain('Petals drink and shine');
+    expect(described.summary).not.toContain('Wrote a single 5-7-5 haiku about rain.');
+  });
+
+  it('maps the four captured gate-run limerick children to their poem text, not the meta-summary', () => {
+    // Verbatim child finalText rows from the live G2 failure storage
+    // (chrome.storage.local dpp_inline_agent_traces, 2026-09-19 05:12-05:14
+    // local): body deliverable plus a taught task_complete marker whose
+    // summary is meta-prose. The mapping must surface the poem.
+    const captured = [
+      {
+        id: 'subagent:tp7kgp:1',
+        finalText:
+          'A gate that creaks in the evening breeze,\nStill holds the world it cannot seize.\n\n<task_complete>{"summary":"Wrote a two-line limerick about gates"}</task_complete>',
+      },
+      {
+        id: 'subagent:tp7kgp:2',
+        finalText:
+          "A gate that was rusty and old,\nLet nobody through, so I'm told.\n\n<task_complete>{\"summary\":\"Delivered a two-line limerick about gates\"}</task_complete>",
+      },
+      {
+        id: 'subagent:w88m8t:1',
+        finalText:
+          'A gate that squeaks on its rusted old hinge,\nWill summon a neighbor to lecture and whinge.\n\n<task_complete>{"summary":"Wrote a two-line limerick about gates."}</task_complete>',
+      },
+      {
+        id: 'subagent:w88m8t:2',
+        finalText:
+          'A gate that swings open with a creak,\nLets in all the wanderers who seek.\n\n<task_complete>{"summary":"Wrote a two-line limerick about gates and output only the limerick."}</task_complete>',
+      },
+    ];
+    for (const row of captured) {
+      const described = describeInlineAgentSubagentSpawnResult('en', {
+        ok: true,
+        refused: false,
+        childTraceId: row.id,
+        childLoopId: row.id,
+        status: 'complete',
+        finalText: row.finalText,
+        totalSteps: 1,
+        totalTools: 0,
+        deadlineExceeded: false,
+      });
+      expect(described.ok).toBe(true);
+      expect(described.summary).toContain('A gate that');
+      expect(described.summary).not.toContain('Wrote a two-line limerick');
+      expect(described.summary).not.toContain('Delivered a two-line limerick');
+      expect(described.summary).not.toContain('<task_complete>');
+    }
   });
 
   it('a wrapper-only final text becomes the clean summary deliverable', () => {
