@@ -66,6 +66,17 @@ When prose and executable behavior disagree, verify the code and tests, then upd
 - **工具执行单一路径**：pi 桥接工具（`core/inline-agent/pi/tool-bridge.ts`）只通过注入的授权执行路径（background grant）向下调用；调用 source 必须携带与 grant 绑定的 requestId/chatSessionId；不得发明第二条执行路径。
 - **AGENT_* 事件协议受契约测试保护**：`tests/inline-agent-event-protocol-golden.test.ts` 是 inline agent 页面协议的逐字节基线（含全量工具记录载荷）；任何 loop 引擎变更必须保持该测试全绿。
 - **pi 生态技能只走现有导入管线（B3 起）**：pi/agentskills.io 生态的 SKILL.md 目录经既有 local-import 管线导入（`core/skill/local-importer.ts` 的 `parseSkillDoc` 是 SKILL.md 解析单一真源；`core/skill/pi-importer.ts` 是显式桥接面）；禁止 import `@earendil-works/*` harness（skill 加载器/prompt 格式化器零引用——pi 模板不得进入 wire，`tests/pi-skill-importer.test.ts` grep 断言）；技能内容只进现有 Skill 存储（无新持久化键）；`disable-model-invocation` 等 pi 字段仅 metadata 保留，启停语义归应用。
+
+### Harness UX and parser invariants (2026-09-19 night session)
+
+- DSML total capture: every DSML-delimited block (any U+FF5C bar count/position, whitespace-tolerant, `calls`/`tool_calls`, unclosed to EOF) is captured via `core/interceptor/dsml-delimiters.ts`, the single shared truth; batch, streaming, page-side `XmlToolStreamFilter`, display, and history stripping all derive from it, and strip symmetry is exact. Delimiter malformation is a non-blocking `tool_call_delimiter_corrected` annotation: normalize and execute when the invoke resolves; only content-level failures produce structured model feedback. A tool call must NEVER render as plain text.
+- Strip orphan closing tags (the model double-closes a tool tag) silently from every surface after extraction; never lecture the model about them.
+- Stream bootstrap: a response whose first byte is tool-call markup arrives inside the SSE bootstrap snapshot fragments; `extractResponseTextFromParsed` must extract fragment content from snapshots (regression: tests replaying the captured wire). Contain renderer crashes at the identified stage; a content script must never crash the page.
+- `subagent_spawn` is advertised and executable from turn 1 (merged into `manual_chat` grants). A first-turn parsed spawn seeds the loop and executes in-loop as step 0 through the authorized agent_run path with per-run claim and caps; never outside the authorized path. Child runs get the dedicated task framing (`buildSubagentTaskPrompt` with the `task_complete` signal, which the result mapping consumes out of the deliverable; the deliverable body takes precedence over summary). `toolAllowlistHint` matches against the advertised invocation-name set.
+- Strip before display: recognized tool-call markup (all advertised tools including spawn, orphan closers included) is stripped from native bubbles, restored messages, and console bodies; message actions never offer edit/copy on invisible content (muted placeholder pattern).
+- UI typography: keep one coherent type scale across every extension surface (in-run chrome denser than the page is fine; mixed ad-hoc sizes are not); restored-mode sizing derives from the measured host size via the documented custom property.
+- Terminal honesty: exactly one terminal status per run (supersede shows the superseded status, never stacked with Complete); strip ANSI escape codes at the MCP result boundary before the model sees them; validate empty tool-call bodies client-side through the structured retryable channel.
+
 ## Security Baseline
 
 - Never hardcode secrets, API keys, credentials, or tokens.
