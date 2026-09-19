@@ -319,6 +319,15 @@ const CONTENT_TOAST_CLASS = "dpp-content-toast";
 const CONTENT_TOAST_STYLE_ID = "dpp-content-toast-css";
 const EXPORT_ACTION_MENU_CLASS = "dpp-export-menu";
 const DEEPSEEK_ACTION_CONTROL_SELECTOR = 'button, [role="button"].ds-button';
+// Defect "buttons on invisible content" (2026-09-19): DeepSeek renders the
+// native message action bar as a sibling of the `.ds-message` bubble, so a
+// stripped bubble keeps working copy/like actions on absent content. The
+// marker records WHY the message is stripped ("stripped" = the DOM scrubber
+// removed tool markup; "empty" = the payload was emptied before render) and
+// the injected stylesheet scopes the action-bar cleanup to exactly those
+// messages. Values are contract: tests pin both.
+const STRIPPED_TOOL_CALL_MESSAGE_ATTRIBUTE = "data-dpp-stripped-tool-call";
+const STRIPPED_MESSAGE_STYLE_ID = "dpp-stripped-message-css";
 const EXPORT_ACTION_MOUNT_DEBOUNCE_MS = 250;
 const EXPORT_ACTION_RETRY_MS = 250;
 const EXPORT_ACTION_RETRY_LIMIT = 20;
@@ -1141,6 +1150,7 @@ function startToolCapability(
   toolCapabilityScope = scope;
   const epoch = ++toolCapabilityEpoch;
   toolBlockRouteKey = getTokenSpeedRouteKey();
+  injectStrippedMessageActionStyles();
   startRenderedToolCallCleaner(scope, mutationHub);
   observeReportedPersistence(restorePersistedToolBlocks(scope, epoch));
 }
@@ -1188,6 +1198,7 @@ async function stopToolCapability(): Promise<void> {
     .querySelectorAll(".dpp-artifact-results")
     .forEach((node) => node.remove());
   document.getElementById(PERMISSION_BANNER_STYLE_ID)?.remove();
+  document.getElementById(STRIPPED_MESSAGE_STYLE_ID)?.remove();
   if (errors.length > 0) {
     throw new AggregateError(
       errors,
@@ -8921,8 +8932,15 @@ function cleanRenderedToolCalls() {
   for (const root of roots) {
     try {
       hideInlineAgentContinuationMessages(root);
-      stripToolCallTextNodes(root);
+      const stripped = stripToolCallTextNodes(root);
       ensureStrippedToolCallNote(root);
+      if (
+        stripped &&
+        root instanceof HTMLElement &&
+        !root.hasAttribute(STRIPPED_TOOL_CALL_MESSAGE_ATTRIBUTE)
+      ) {
+        root.setAttribute(STRIPPED_TOOL_CALL_MESSAGE_ATTRIBUTE, "stripped");
+      }
     } catch (error) {
       // Containment (renderer-crash class, 2026-09-18): one malformed stream
       // fragment must never take the page down through the cleanup loop. The
@@ -8936,6 +8954,10 @@ function cleanRenderedToolCalls() {
       }
     }
   }
+  // Every pass re-checks every mounted bubble: the native action bar lives
+  // OUTSIDE the message element, so coherence (marker + placeholder) must
+  // be re-derived even when this pass had no cleanable root.
+  ensureStrippedToolCallNotes();
 }
 
 /**
@@ -8943,9 +8965,10 @@ function cleanRenderedToolCalls() {
  * visually coherent (Defect 6, 2026-09-18): after the strip, DeepSeek's own
  * edit/copy action buttons would otherwise offer actions on invisible
  * content. A minimal muted placeholder line gives the native message an
- * intentional body. Extension-owned, appended (never a React tree-shape
- * mutation), and idempotent via the marker attribute; if the site re-renders
- * the message the mutation hub re-runs this and the note re-mounts.
+ * intentional body; the marker (set by the caller) hides the native action
+ * bar. Extension-owned, appended (never a React tree-shape mutation), and
+ * idempotent via the marker attribute; if the site re-renders the message
+ * the mutation hub re-runs this and the note re-mounts.
  */
 function ensureStrippedToolCallNote(root: Element): void {
   if (root instanceof HTMLElement && root.classList.contains("ds-message")) {
@@ -8957,11 +8980,14 @@ function ensureStrippedToolCallNote(root: Element): void {
  * Mounts the placeholder into one message unless it is already noted or has
  * visible content of its own. Host-less messages (the history-stripped case:
  * DeepSeek never rendered a content host for a message whose payload was
- * emptied before render) host the note on the message element itself.
+ * emptied before render) host the note on the message element itself. The
+ * emptiness check counts NATIVE text only: the extension's own run record
+ * and note live inside the message and must not make a stripped bubble look
+ * populated.
  */
 function mountStrippedToolCallNote(message: HTMLElement): void {
   if (message.querySelector('[data-dpp-stripped-note="true"]')) return;
-  if ((message.textContent ?? "").trim().length > 0) return;
+  if (getNativeVisibleText(message).trim().length > 0) return;
   const hosts = getAssistantContentHosts(message);
   const note = document.createElement("div");
   note.className = "dpp-stripped-tool-call-note";
@@ -8973,14 +8999,55 @@ function mountStrippedToolCallNote(message: HTMLElement): void {
   (hosts[0] ?? message).appendChild(note);
 }
 
+function removeStrippedToolCallNote(message: HTMLElement): void {
+  message
+    .querySelectorAll('[data-dpp-stripped-note="true"]')
+    .forEach((note) => note.remove());
+}
+
 /**
- * Render-pass scan for messages emptied at the DATA level (live finding,
- * 2026-09-18 smoke): history-cleanup strips the tool markup from the history
- * payload BEFORE React renders, so those messages never contain tool text
- * (the scrubber pass never runs) and never grow a content host
- * (getAssistantContentHosts-based lists never see them). A host-less,
- * text-less, non-hidden .ds-message is exactly such a bubble; the
- * restored-render pass calls this so every virtual-list mount re-checks.
+ * Native-visible text: the message's text content minus extension-owned
+ * subtrees (dpp-* classes / data-dpp-* attributes). DeepSeek's copy/edit
+ * handlers operate on the native content, so coherence decisions (placeholder
+ * mount, action-bar hiding, self-heal) must key on this, not raw textContent.
+ */
+function getNativeVisibleText(message: HTMLElement): string {
+  let text = "";
+  const walk = (element: Element): void => {
+    for (const child of Array.from(element.childNodes)) {
+      if (child.nodeType === Node.TEXT_NODE) {
+        text += child.nodeValue ?? "";
+      } else if (child instanceof Element && !isExtensionOwnedUiElement(child)) {
+        walk(child);
+      }
+    }
+  };
+  walk(message);
+  return text;
+}
+
+function isExtensionOwnedUiElement(element: Element): boolean {
+  if (
+    [...element.classList].some((cls) => cls.startsWith("dpp-")) ||
+    [...element.attributes].some((attr) => attr.name.startsWith("data-dpp-"))
+  ) {
+    return true;
+  }
+  return false;
+}
+
+/**
+ * Render-pass scan keeping every mounted bubble coherent (Defect
+ * "buttons on invisible content", 2026-09-19). Two shapes are covered:
+ *  - history-cleanup strips the tool markup from the history payload BEFORE
+ *    React renders, so those messages never contain tool text (the scrubber
+ *    strip never runs) and never grow a content host; a host-less, text-less
+ *    .ds-message is exactly that shape, marked "empty" so the native action
+ *    bar (a sibling of the bubble) is hidden and the placeholder mounts;
+ *  - a message marked "empty" that later shows native content was a mis-mark
+ *    (a streaming mount raced its text): the marker and note retire so the
+ *    native actions operate on the real content again.
+ * The strip path marks its own roots "stripped" in cleanRenderedToolCalls.
  */
 function ensureStrippedToolCallNotes(): void {
   for (const message of Array.from(
@@ -8990,10 +9057,53 @@ function ensureStrippedToolCallNotes(): void {
     if (message.hasAttribute("data-dpp-hidden-inline-agent-continuation")) {
       continue;
     }
-    if (getAssistantContentHosts(message).length === 0) {
+    // Collapsed step bubbles are extension-consumed state; never re-note or
+    // unmark them here.
+    if (message.hasAttribute("data-dpp-collapsed-inline-agent-step")) {
+      continue;
+    }
+    const markedReason = message.getAttribute(
+      STRIPPED_TOOL_CALL_MESSAGE_ATTRIBUTE,
+    );
+    if (markedReason === "stripped") continue;
+    if (
+      getAssistantContentHosts(message).length === 0 &&
+      getNativeVisibleText(message).trim().length === 0
+    ) {
+      message.setAttribute(STRIPPED_TOOL_CALL_MESSAGE_ATTRIBUTE, "empty");
       mountStrippedToolCallNote(message);
+      continue;
+    }
+    const hasNativeContent =
+      getNativeVisibleText(message).trim().length > 0 ||
+      getAssistantContentHosts(message).some(
+        (host) => (host.textContent ?? "").trim().length > 0,
+      );
+    if (markedReason === "empty" && hasNativeContent) {
+      message.removeAttribute(STRIPPED_TOOL_CALL_MESSAGE_ATTRIBUTE);
+      removeStrippedToolCallNote(message);
     }
   }
+}
+
+/**
+ * Marker-scoped cleanup for DeepSeek's native message action bar (defect
+ * "buttons on invisible content", 2026-09-19). The bar is a FOLLOWING
+ * SIBLING of the bubble inside the row wrapper, so the sibling combinator
+ * reaches it without touching React-owned structure. Only DeepSeek's
+ * ds-button namespace is hidden: extension-owned actions mounted in the
+ * same bar (dpp-export-action) stay usable.
+ */
+function injectStrippedMessageActionStyles(): void {
+  if (document.getElementById(STRIPPED_MESSAGE_STYLE_ID)) return;
+  const style = document.createElement("style");
+  style.id = STRIPPED_MESSAGE_STYLE_ID;
+  style.textContent = `
+    .ds-message[data-dpp-stripped-tool-call] ~ .ds-flex .ds-button {
+      display: none !important;
+    }
+  `;
+  document.head.appendChild(style);
 }
 
 function startInlineAgentContinuationMessageHider(
@@ -9125,8 +9235,12 @@ function getToolCleanupRoots(): Element[] {
   return Array.from(roots);
 }
 
-function stripToolCallTextNodes(root: Element) {
-  if (!containsCleanableText(root.textContent)) return;
+function stripToolCallTextNodes(root: Element): boolean {
+  if (!containsCleanableText(root.textContent)) return false;
+
+  // Only genuine tool-markup removal marks the message: blank-line collapse
+  // and other cosmetic edits must never hide a healthy message's actions.
+  let removedToolMarkup = false;
 
   const textNodes: Text[] = [];
   const changedParents = new Set<HTMLElement>();
@@ -9193,6 +9307,7 @@ function stripToolCallTextNodes(root: Element) {
         }
         cursor += closeMatch.index + closeMatch[0].length;
         activeTool = null;
+        removedToolMarkup = true;
         continue;
       }
 
@@ -9203,6 +9318,7 @@ function stripToolCallTextNodes(root: Element) {
         // delimiter corrections, without touching anything else.
         const orphanClose = toolCloseTagRe.exec(sanitizedOriginal.slice(cursor));
         if (orphanClose) {
+          removedToolMarkup = true;
           let beforeClose = sanitizedOriginal.slice(
             cursor,
             cursor + orphanClose.index,
@@ -9238,6 +9354,7 @@ function stripToolCallTextNodes(root: Element) {
       next += before;
       stripTailLeadingNewlines = /\n$/.test(next) || lastNodeEndsWithNewline;
       activeTool = openMatch[1];
+      removedToolMarkup = true;
       cursor += openMatch.index + openMatch[0].length;
     }
 
@@ -9252,6 +9369,7 @@ function stripToolCallTextNodes(root: Element) {
   for (const parent of changedParents) {
     pruneEmptyToolContainers(parent, root);
   }
+  return removedToolMarkup;
 }
 
 /**
