@@ -28,9 +28,10 @@ vi.mock('../core/deepseek/adapter', () => ({
 }));
 
 const { runInlineAgentLoop } = await import('../core/inline-agent/loop');
-const { INLINE_AGENT_LOOP_EVENT_WATCHDOG_MS } = await import(
+const { INLINE_AGENT_LOOP_EVENT_WATCHDOG_MS, INLINE_AGENT_COMPACTION_TIMEOUT_MS, INLINE_AGENT_STEP_TIMEOUT_MS, INLINE_AGENT_REQUEST_DELAY_MAX_MS } = await import(
   '../core/inline-agent/types'
 );
+const { DEEPSEEK_POW_DEADLINE_MS } = await import('../core/deepseek/active-client');
 const { INLINE_AGENT_LOOP_WATCHDOG_ERROR_MESSAGE } = await import(
   '../core/inline-agent/pi/loop-adapter'
 );
@@ -196,8 +197,25 @@ describe('inline-agent loop no-event watchdog (D1b)', () => {
     );
   });
 
-  it('uses a named constant strictly above the 180s tool deadline', () => {
-    expect(INLINE_AGENT_LOOP_EVENT_WATCHDOG_MS).toBeGreaterThan(180_000);
+  it('uses a named constant strictly above the true silent-phase stack of one turn', () => {
+    // The worst legal NO-EVENT window opens at AGENT_STEP_STARTED and can
+    // stack EVERY silent phase of one turn: the memoized compaction
+    // transform (transformContext runs before every LLM call and posts
+    // nothing; its summarizer is bounded by the compaction timeout) + the
+    // request pacing delay + the no-chunk retry chain (2 x step deadline +
+    // 2 x PoW deadline + pacing). Tool phases poke at start AND end
+    // (monitoredExecuteTool), so their 180s silence never stacks with this
+    // chain. The threshold must clear the full stack - a threshold at or
+    // below it finalizes a legitimately alive run (the forbidden D1b
+    // false kill).
+    const worstSilentStack =
+      INLINE_AGENT_COMPACTION_TIMEOUT_MS
+      + INLINE_AGENT_REQUEST_DELAY_MAX_MS
+      + 2 * INLINE_AGENT_STEP_TIMEOUT_MS
+      + 2 * DEEPSEEK_POW_DEADLINE_MS
+      + INLINE_AGENT_REQUEST_DELAY_MAX_MS;
+    expect(worstSilentStack).toBeGreaterThan(400_000); // sanity: the stack really is ~413s
+    expect(INLINE_AGENT_LOOP_EVENT_WATCHDOG_MS).toBeGreaterThan(worstSilentStack);
   });
 });
 

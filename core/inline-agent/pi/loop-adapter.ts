@@ -173,10 +173,12 @@ export async function runPiInlineAgentLoop(deps: PiLoopAdapterDeps): Promise<voi
   // forever (live trace pyr24x: 6 steps, then no 7th request, no terminal
   // event, no resume). This watchdog requires PROGRESS PROOF: every AGENT_*
   // event post and every tool invocation resets it. If nothing happens for
-  // INLINE_AGENT_LOOP_EVENT_WATCHDOG_MS - strictly above the 180s tool
-  // deadline and the 120s step/compaction timeouts, so no legitimately slow
-  // run can ever trip it - the engine is aborted and the run finalized with a
-  // structured, model-visible error instead of dying silently.
+  // INLINE_AGENT_LOOP_EVENT_WATCHDOG_MS - strictly above the worst STACKED
+  // silent stretch of one turn (silent compaction 120s + pacing + the 2 x
+  // 120s step / 2 x 20s PoW retry chain = 413s; tool silence never stacks
+  // with that chain because this wrapper pokes at start and end) - the
+  // engine is aborted and the run finalized with a structured, model-visible
+  // error instead of dying silently.
   let watchdogTimer: ReturnType<typeof setTimeout> | null = null;
   let finalizeDone = false;
   const fireWatchdog = () => {
@@ -679,12 +681,13 @@ export async function runPiInlineAgentLoop(deps: PiLoopAdapterDeps): Promise<voi
       // (mismatched close, incomplete, invalid payload) must reach the
       // model's feedback loop exactly like the batch path - the call never
       // executes and the reason becomes the error tool result.
-      // EXCEPTION (pc directive 2, 2026-09-18): NON-BLOCKING annotations
-      // (`tool_call_delimiter_corrected`; `tool_call_name_recovered` for a
-      // bound short-form tag, fix round 4 D2) mark recovered calls that
-      // EXECUTE - the annotation stays on the record for trace visibility
-      // only. Blocking codes (including `tool_call_name_ambiguous`) feed the
-      // structured retryable channel below.
+      // EXCEPTION (pc directive 2, 2026-09-18): the one NON-BLOCKING
+      // annotation (`tool_call_delimiter_corrected`) marks a recovered call
+      // that EXECUTES - the annotation stays on the record for trace
+      // visibility only, and a UNIQUE short-form tag executes as a clean
+      // catalog alias with no annotation at all. Blocking codes (including
+      // `tool_call_name_ambiguous`) feed the structured retryable channel
+      // below.
       const parseError = (toolCall as { parseError?: ToolError }).parseError;
       if (parseError && !isNonBlockingToolParseError(parseError.code)) {
         return {
