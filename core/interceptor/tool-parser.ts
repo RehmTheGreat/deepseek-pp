@@ -592,10 +592,9 @@ export function replaceToolCallsWithSummary(text: string, input?: ToolParsingInp
 function replaceMatchWithSummary(match: string, catalog: ToolInvocationCatalog): string {
   const calls = extractToolCalls(match, { descriptors: catalog.descriptors });
   if (calls.length === 0) return '';
-  // `tool_call_delimiter_corrected` and `tool_call_name_recovered` are
-  // NON-BLOCKING annotations: the call executes, so it renders as an executed
-  // line and counts as executed in the header. Only blocking codes render
-  // 格式错误.
+  // `tool_call_delimiter_corrected` is the one NON-BLOCKING annotation: the
+  // call executes, so it renders as an executed line and counts as executed in
+  // the header. Only blocking codes render 格式错误.
   const isBlocking = (call: ToolCall) =>
     Boolean(call.parseError) && !isNonBlockingToolParseError(call.parseError!.code);
   const lines = calls.map(call => {

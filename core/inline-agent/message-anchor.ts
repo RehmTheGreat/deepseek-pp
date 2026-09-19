@@ -177,7 +177,10 @@ export interface TraceOwnedStepRecord {
  *
  * Identity rules, in order of trust (mirrors findInlineAgentRestoreTarget):
  *  1. the step's committed responseMessageId when the DOM exposes it;
- *  2. the step's own persisted text, markdown-normalized, same as anchoring.
+ *  2. the step's own persisted text, markdown-normalized, same as anchoring,
+ *     ANCHORED AT THE MESSAGE START (review fix): a message that merely
+ *     contains the snippet mid-text (a later summary quoting the step's
+ *     opening line) is not the step's bubble and must never be collapsed.
  * Steps are processed in order and each match constrains the next search to
  * later document positions (steps commit in order), which also stops a later
  * step from consuming an earlier message. Already-used messages (consoles,
@@ -213,7 +216,9 @@ export function matchTraceOwnedStepMessages(
         for (let i = searchFrom; i < messages.length; i += 1) {
           const message = messages[i];
           if (usedMessages.has(message)) continue;
-          if (normalizeAnchorText(getAssistantMessageOwnText(message)).includes(snippet)) {
+          // Start-anchored: the step's text opens the message. A mid-message
+          // mention (a summary quoting the step) is a different bubble.
+          if (normalizeAnchorText(getAssistantMessageOwnText(message)).startsWith(snippet)) {
             matchedIndex = i;
             break;
           }

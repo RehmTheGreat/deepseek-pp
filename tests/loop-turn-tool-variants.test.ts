@@ -39,9 +39,8 @@ vi.mock('../core/deepseek/adapter', () => ({
  *  - ONE shared tag-name resolution truth (core/tool/tag-variants.ts) behind
  *    the batch parser, the streaming parser, the visible-text accumulator,
  *    the page-side XmlToolStreamFilter and the history-cleanup marker gate;
- *  - a short tag resolving to exactly one advertised tool EXECUTES with a
- *    non-blocking `tool_call_name_recovered` annotation (same policy as
- *    tool_call_delimiter_corrected: recovered bytes execute, no lecture);
+ *  - a short tag resolving to exactly one advertised tool EXECUTES cleanly as
+ *    an accepted catalog alias, with no annotation on the record;
  *  - an ambiguous short tag becomes a BLOCKING structured parse error
  *    (`tool_call_name_ambiguous`) that reaches the model through the existing
  *    invalidFormat feedback channel - never silence, never prose leak;

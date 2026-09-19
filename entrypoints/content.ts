@@ -8311,6 +8311,14 @@ function collapseRestoredInlineAgentStepMessages(
   usedMessages: Set<Element>,
 ): void {
   const currentUrl = getToolBlockUrl();
+  // Only assistant-hosted messages are collapse targets (review fix): the
+  // shared getAssistantMessages fallback can return user bubbles when the
+  // DOM exposes no assistant hosts, and hiding a user's own bubble would
+  // lose their content. No assistant-hosted message at all -> no collapse
+  // (no match is better than a wrong collapse).
+  const assistantHostedMessages = messages.filter(
+    (message) => getAssistantContentHosts(message).length > 0,
+  );
   for (const trace of restoredInlineAgentTraces.values()) {
     if (!shouldTryRestoreInlineAgentTrace(trace, currentUrl)) continue;
     // Only collapse for runs whose console is actually restored: hiding the
@@ -8337,7 +8345,7 @@ function collapseRestoredInlineAgentStepMessages(
       responseMessageId: step.responseMessageId,
       text: getInlineAgentRestoredStepText(step.text) || step.text,
     }));
-    const matched = matchTraceOwnedStepMessages(messages, candidates, usedMessages);
+    const matched = matchTraceOwnedStepMessages(assistantHostedMessages, candidates, usedMessages);
     for (const message of matched.values()) {
       if (usedMessages.has(message)) continue;
       if (

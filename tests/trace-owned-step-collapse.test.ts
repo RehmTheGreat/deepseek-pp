@@ -86,6 +86,22 @@ describe('matchTraceOwnedStepMessages (D3 matcher)', () => {
     const matched = matchTraceOwnedStepMessages([msg], steps, new Set());
     expect(matched.size).toBe(0);
   });
+
+  it('anchors the text leg at message start: a mid-message mention never matches', () => {
+    // Review fix: the loose `includes` leg could collapse an unrelated longer
+    // message (e.g. a later summary that QUOTES the step's opening line in
+    // its middle). The step's text must anchor at the message's own start.
+    const stepText = 'Check one passed with a detailed observation here';
+    const midMessageMention = message(`Summary of everything: ${stepText}, plus more prose.`);
+    const realStepBubble = message(`${stepText} Continue.`);
+    const steps = [{ index: 0, responseMessageId: null, text: stepText }];
+    const matched = matchTraceOwnedStepMessages(
+      [midMessageMention, realStepBubble],
+      steps,
+      new Set(),
+    );
+    expect(matched.get(0)).toBe(realStepBubble);
+  });
 });
 
 describe('content.ts collapse wiring (D3, source contracts)', () => {
@@ -117,5 +133,16 @@ describe('content.ts collapse wiring (D3, source contracts)', () => {
       .split('function renderRestoredInlineAgentTraces(')[1]
       ?.split('\nfunction ')[0];
     expect(render).toContain('collapseRestoredInlineAgentStepMessages');
+  });
+
+  it('only considers assistant-hosted messages as collapse targets', () => {
+    // Review fix: the shared getAssistantMessages fallback can return user
+    // bubbles when the DOM exposes no assistant hosts - hiding a user's own
+    // bubble would lose their content. The collapse must filter to
+    // assistant-hosted messages first.
+    const fn = contentSource
+      .split('function collapseRestoredInlineAgentStepMessages(')[1]
+      ?.split('\nfunction ')[0];
+    expect(fn).toContain('getAssistantContentHosts');
   });
 });
