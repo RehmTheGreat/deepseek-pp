@@ -13,7 +13,9 @@ export function createToolCallScanGate(
   descriptors: readonly ToolDescriptor[],
 ): ToolCallScanGate {
   const catalog = createToolInvocationCatalog(descriptors);
-  const toolNames = new Set(catalog.invocationNames);
+  // Shared scanner truth (D2): gate on the full tag set so variant short-name
+  // chunks reach the parsers instead of being skipped upstream.
+  const toolNames = new Set(catalog.toolTagNames);
   let tail = '';
 
   return {

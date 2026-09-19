@@ -7,7 +7,8 @@ import {
   type ToolParsingInput,
 } from '../tool';
 import { findDsmlTag, findNextDsmlToolBlock, normalizeDsmlDelimiters } from './dsml-delimiters';
-import { MISMATCHED_TOOL_CALL_ERROR_CODE, TOOL_CALL_DELIMITER_CORRECTED_ERROR_CODE } from '../tool/execution-error';
+import { MISMATCHED_TOOL_CALL_ERROR_CODE, TOOL_CALL_DELIMITER_CORRECTED_ERROR_CODE, isNonBlockingToolParseError } from '../tool/execution-error';
+import { createToolCallFromTagMatch } from '../tool/tag-variants';
 import { findFirstXmlToolTag, type XmlToolTagMatch } from '../tool/xml-tags';
 
 export const LEGACY_TOOL_CALLS_OPEN_TAG = '<｜DSML｜tool_calls>';
@@ -51,9 +52,11 @@ export function extractLegacyToolCalls(text: string, input?: ToolParsingInput): 
  */
 function extractXmlToolCalls(text: string, catalog: ToolInvocationCatalog): ToolCall[] {
   const calls: ToolCall[] = [];
-  const names = catalog.invocationNames;
-  if (names.length === 0 || !text) return calls;
-  const nameSet = new Set(names);
+  // Shared scanner truth (D2): the scan set includes short descriptor names,
+  // and each match resolves through the ONE variant rule (exact path, bound
+  // short name, or structured ambiguous error).
+  const nameSet = new Set(catalog.toolTagNames);
+  if (nameSet.size === 0 || !text) return calls;
   let fromIndex = 0;
 
   while (fromIndex < text.length) {
@@ -81,38 +84,35 @@ function extractXmlToolCalls(text: string, catalog: ToolInvocationCatalog): Tool
 
     const raw = text.slice(open.index, close.endIndex);
     const body = text.slice(open.endIndex, close.index).trim();
-    const invocationName = open.name;
-    let payload: Record<string, unknown>;
+    let payload: Record<string, unknown> | null = null;
+    let bodyError: ToolError | null = null;
     try {
       const parsed = body.length === 0 ? {} : JSON.parse(body);
       if (!isToolPayload(parsed)) {
-        calls.push(createToolCallFromInvocation(invocationName, {}, raw, catalog, {
-          parseError: createToolParseError(
-            'tool_call_payload_invalid',
-            invocationName,
-            'Tool call body must be a JSON object.',
-          ),
-        }));
-        fromIndex = close.endIndex;
-        continue;
+        bodyError = createToolParseError(
+          'tool_call_payload_invalid',
+          open.name,
+          'Tool call body must be a JSON object.',
+        );
+      } else {
+        payload = parsed;
       }
-      payload = parsed;
     } catch (err) {
-      calls.push(createToolCallFromInvocation(invocationName, {}, raw, catalog, {
-        parseError: createToolParseError(
-          'tool_call_json_invalid',
-          invocationName,
-          [
-            'Tool call body is not valid JSON.',
-            'Use double quotes for strings and escape backslashes in local file paths, for example "D:\\\\project\\\\file.txt" or "D:/project/file.txt".',
-            err instanceof Error ? err.message : String(err),
-          ].join(' '),
-        ),
-      }));
-      fromIndex = close.endIndex;
-      continue;
+      bodyError = createToolParseError(
+        'tool_call_json_invalid',
+        open.name,
+        [
+          'Tool call body is not valid JSON.',
+          'Use double quotes for strings and escape backslashes in local file paths, for example "D:\\\\project\\\\file.txt" or "D:/project/file.txt".',
+          err instanceof Error ? err.message : String(err),
+        ].join(' '),
+      );
     }
-    calls.push(createToolCallFromInvocation(invocationName, payload, raw, catalog));
+    calls.push(createToolCallFromTagMatch(open.name, catalog, {
+      payload: payload ?? {},
+      raw,
+      parseError: bodyError ?? undefined,
+    }));
     fromIndex = close.endIndex;
   }
 
@@ -219,7 +219,9 @@ function createMismatchedCloseToolCall(
   const message = terminator.closing
     ? `Tool call <${open.name}> was closed by ${terminator.label} instead of ${expectedClose}.`
     : `Tool call <${open.name}> reached the next tool tag ${terminator.label} without ${expectedClose}.`;
-  return createToolCallFromInvocation(open.name, payload, raw, catalog, {
+  return createToolCallFromTagMatch(open.name, catalog, {
+    payload,
+    raw,
     parseError: createToolParseError(MISMATCHED_TOOL_CALL_ERROR_CODE, open.name, message),
   });
 }
@@ -442,9 +444,10 @@ interface ToolCallBlockRange {
  */
 function collectXmlToolCallBlocks(text: string, catalog: ToolInvocationCatalog): ToolCallBlockRange[] {
   const blocks: ToolCallBlockRange[] = [];
-  const names = catalog.invocationNames;
-  if (names.length === 0 || !text) return blocks;
-  const nameSet = new Set(names);
+  // Same extended scan set as extraction (D2 shared truth): strip symmetry
+  // must cover the short-name variant shapes the parser now claims.
+  const nameSet = new Set(catalog.toolTagNames);
+  if (nameSet.size === 0 || !text) return blocks;
   let fromIndex = 0;
 
   while (fromIndex < text.length) {
@@ -549,7 +552,7 @@ const ORPHAN_CLOSE_FAMILY_NAMES = new Set(['invoke', 'tool_calls', 'calls']);
 export function stripOrphanClosingTags(text: string, input?: ToolParsingInput): string {
   if (!text) return text;
   const catalog = createToolInvocationCatalog(input?.descriptors);
-  const closeNames = new Set(catalog.invocationNames);
+  const closeNames = new Set(catalog.toolTagNames);
   for (const familyName of ORPHAN_CLOSE_FAMILY_NAMES) closeNames.add(familyName);
 
   let result = '';
@@ -589,11 +592,12 @@ export function replaceToolCallsWithSummary(text: string, input?: ToolParsingInp
 function replaceMatchWithSummary(match: string, catalog: ToolInvocationCatalog): string {
   const calls = extractToolCalls(match, { descriptors: catalog.descriptors });
   if (calls.length === 0) return '';
-  // `tool_call_delimiter_corrected` is a NON-BLOCKING annotation: the call
-  // executes, so it renders as an executed line and counts as executed in
-  // the header. Only blocking codes render 格式错误.
+  // `tool_call_delimiter_corrected` and `tool_call_name_recovered` are
+  // NON-BLOCKING annotations: the call executes, so it renders as an executed
+  // line and counts as executed in the header. Only blocking codes render
+  // 格式错误.
   const isBlocking = (call: ToolCall) =>
-    Boolean(call.parseError) && call.parseError!.code !== TOOL_CALL_DELIMITER_CORRECTED_ERROR_CODE;
+    Boolean(call.parseError) && !isNonBlockingToolParseError(call.parseError!.code);
   const lines = calls.map(call => {
     const name = call.name;
     if (isBlocking(call)) return `• ${getToolInvocationLabel(name, catalog)}：格式错误`;

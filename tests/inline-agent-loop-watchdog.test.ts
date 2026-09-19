@@ -150,7 +150,7 @@ describe('inline-agent loop no-event watchdog (D1b)', () => {
       },
     );
 
-    let releaseTool: (() => void) | null = null;
+    let releaseTool: (() => void) | undefined;
     const executeTool = vi.fn(async () => {
       await new Promise<void>((resolve) => {
         releaseTool = resolve;
@@ -184,7 +184,7 @@ describe('inline-agent loop no-event watchdog (D1b)', () => {
       expect.anything(),
     );
 
-    releaseTool?.();
+    releaseTool!();
     await vi.advanceTimersByTimeAsync(30_000);
     await run;
     expect(post).toHaveBeenCalledWith('AGENT_LOOP_COMPLETE', expect.objectContaining({

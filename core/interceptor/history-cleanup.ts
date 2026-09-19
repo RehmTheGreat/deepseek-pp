@@ -430,7 +430,8 @@ function withOrphanClosingTagBlocks(
 const ORPHAN_CLOSE_FAMILY_NAMES = new Set(['invoke', 'tool_calls', 'calls']);
 
 function orphanCloseNames(catalog: ToolInvocationCatalog): Set<string> {
-  const names = new Set(catalog.invocationNames);
+  // Shared tag scan set (D2): variant short-name closers are junk too.
+  const names = new Set(catalog.toolTagNames);
   for (const familyName of ORPHAN_CLOSE_FAMILY_NAMES) names.add(familyName);
   return names;
 }
@@ -440,7 +441,9 @@ function findXmlToolBlocks(
   catalog: ToolInvocationCatalog,
 ): LightweightToolBlock[] {
   const blocks: LightweightToolBlock[] = [];
-  const invocationNames = new Set(catalog.invocationNames);
+  // Shared scanner truth (D2): short descriptor-name variants are claimed
+  // exactly like exact invocation-name tags (strip symmetry).
+  const invocationNames = new Set(catalog.toolTagNames);
   let searchFrom = 0;
 
   while (searchFrom < text.length) {

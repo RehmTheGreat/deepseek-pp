@@ -10,11 +10,27 @@ import {
   INCOMPLETE_TOOL_CALL_ERROR_CODE,
   MISMATCHED_TOOL_CALL_ERROR_CODE,
 } from '../tool/execution-error';
+import { resolveToolTagName } from '../tool/tag-variants';
 import {
   findFirstXmlToolTag,
   getPartialXmlToolTagTailLength,
 } from '../tool/xml-tags';
 import { findDsmlTag, getDsmlShapeTailLength } from './dsml-delimiters';
+
+/** Builds the BLOCKING error for a short-name tag matching several tools. */
+function createNameAmbiguousParseError(
+  name: string,
+  invocationNames: string[],
+): ToolError {
+  return {
+    code: 'tool_call_name_ambiguous',
+    message: `Tool tag <${name}> matches several advertised tools (${invocationNames
+      .map((invocationName) => `<${invocationName}>`)
+      .join(', ')}); use the full advertised tag name.`,
+    retryable: true,
+    details: { invocationName: name },
+  };
+}
 
 const STREAM_TOOL_RAW_MAX_LENGTH = 2048;
 const TRUNCATION_SUFFIX = '\n...[truncated]';
@@ -61,13 +77,18 @@ export function createStreamingToolCallParser(
 }
 
 class XmlStreamingToolCallParser implements StreamingToolCallParser {
-  private readonly invocationNames: ReadonlySet<string>;
+  // Shared scanner truth (D2): the scan set includes short descriptor names;
+  // matches resolve through the ONE variant rule in core/tool/tag-variants.ts.
+  private readonly scanNames: ReadonlySet<string>;
   private state: 'NORMAL' | 'SUPPRESSING' = 'NORMAL';
   private pendingNormal = '';
   private pendingSuppressed = '';
   private current: {
     id: string;
+    /** The tag name as written; the record and the close scan both use it. */
     invocationName: string;
+    /** The tag name as the model wrote it - the close-tag scan uses this. */
+    rawName: string;
     openTag: string;
     closeTag: string;
     bodyParts: string[];
@@ -75,13 +96,14 @@ class XmlStreamingToolCallParser implements StreamingToolCallParser {
     externalized: boolean;
     externalizable: boolean;
     failed: boolean;
+    resolution: 'ambiguous' | null;
   } | null = null;
 
   constructor(
     private readonly catalog: ToolInvocationCatalog,
     options?: StreamingToolCallParserOptions,
   ) {
-    this.invocationNames = new Set(catalog.invocationNames);
+    this.scanNames = new Set(catalog.toolTagNames);
     this.activeLocalSkillDir = options?.activeLocalSkillDir || undefined;
   }
 
@@ -89,7 +111,7 @@ class XmlStreamingToolCallParser implements StreamingToolCallParser {
 
   append(chunk: string): StreamingToolCallParserEvent {
     const event = createEmptyParserEvent();
-    if (!chunk || this.invocationNames.size === 0) return event;
+    if (!chunk || this.scanNames.size === 0) return event;
 
     let remaining = chunk;
     while (remaining.length > 0) {
@@ -116,19 +138,26 @@ class XmlStreamingToolCallParser implements StreamingToolCallParser {
     const text = this.pendingNormal + input;
     this.pendingNormal = '';
 
-    const found = findFirstXmlToolTag(text, this.invocationNames, { closing: false });
+    const found = findFirstXmlToolTag(text, this.scanNames, { closing: false });
     if (!found) {
-      const tailLength = getPartialXmlToolTagTailLength(text, this.invocationNames, { closing: false });
+      const tailLength = getPartialXmlToolTagTailLength(text, this.scanNames, { closing: false });
       this.pendingNormal = tailLength > 0 ? text.slice(-tailLength) : '';
       return '';
     }
 
     const id = crypto.randomUUID();
+    // Shared variant rule: the only divergence from the released exact path
+    // is the AMBIGUOUS short name (several advertised tools claim it); exact
+    // names and accepted unique aliases go through the released factory.
+    const resolution = resolveToolTagName(found.name, this.catalog)?.kind === 'ambiguous'
+      ? 'ambiguous'
+      : null;
     this.state = 'SUPPRESSING';
     this.pendingSuppressed = '';
     this.current = {
       id,
       invocationName: found.name,
+      rawName: found.name,
       openTag: found.raw,
       closeTag: getToolCloseTag(found.name),
       bodyParts: [],
@@ -136,14 +165,9 @@ class XmlStreamingToolCallParser implements StreamingToolCallParser {
       externalized: false,
       externalizable: isExternalizableInvocation(found.name),
       failed: false,
+      resolution,
     };
-    event.started.push(createToolCallFromInvocation(
-      found.name,
-      {},
-      found.raw,
-      this.catalog,
-      { id },
-    ));
+    event.started.push(this.createCurrentCallRecord({}, found.raw, undefined, this.current));
     return text.slice(found.endIndex);
   }
 
@@ -156,7 +180,9 @@ class XmlStreamingToolCallParser implements StreamingToolCallParser {
 
     const text = this.pendingSuppressed + input;
     this.pendingSuppressed = '';
-    const closeTag = findFirstXmlToolTag(text, new Set([current.invocationName]), { closing: true });
+    // Close-tag scanning uses the name AS WRITTEN (`</tool_list>` for a short
+    // form), never the canonical full invocation name.
+    const closeTag = findFirstXmlToolTag(text, new Set([current.rawName]), { closing: true });
     // Fail-fast mismatched-close recovery: whichever comes first between the
     // same-name close (complete path below) and a foreign terminator bounds the
     // call. Without this, one malformed call swallowed every following parallel
@@ -192,8 +218,8 @@ class XmlStreamingToolCallParser implements StreamingToolCallParser {
     // foreign closing tag, next known open tag, legacy/plain `</invoke>`
     // literals) so a terminator split across chunks stays contiguous here.
     const tailLength = Math.max(
-      getPartialXmlToolTagTailLength(text, this.invocationNames, { closing: true }),
-      getPartialXmlToolTagTailLength(text, this.invocationNames, { closing: false }),
+      getPartialXmlToolTagTailLength(text, this.scanNames, { closing: true }),
+      getPartialXmlToolTagTailLength(text, this.scanNames, { closing: false }),
       getInvokeCloseTailLength(text),
     );
     this.appendBody(text.slice(0, text.length - tailLength), event);
@@ -219,7 +245,7 @@ class XmlStreamingToolCallParser implements StreamingToolCallParser {
       if (!best || index < best.index) best = { index, label };
     };
 
-    const foreignClose = findFirstXmlToolTag(text, this.invocationNames, { closing: true });
+    const foreignClose = findFirstXmlToolTag(text, this.scanNames, { closing: true });
     if (foreignClose) consider(foreignClose.index, `</${foreignClose.name}>`);
     // DSML invoke close in ANY bar shape (1..8 each side, whitespace-tolerant,
     // any wrapper context) — the shared generalized scanner, same linear cost
@@ -231,7 +257,7 @@ class XmlStreamingToolCallParser implements StreamingToolCallParser {
     );
     if (dsmlClose) consider(dsmlClose.index, INVOKE_CLOSE_TERMINATOR_LEGACY_LABEL);
     consider(text.indexOf(INVOKE_CLOSE_TERMINATOR_PLAIN), INVOKE_CLOSE_TERMINATOR_PLAIN);
-    const nextOpen = findFirstXmlToolTag(text, this.invocationNames, { closing: false });
+    const nextOpen = findFirstXmlToolTag(text, this.scanNames, { closing: false });
     if (nextOpen) consider(nextOpen.index, `<${nextOpen.name}>`);
 
     return best;
@@ -243,22 +269,17 @@ class XmlStreamingToolCallParser implements StreamingToolCallParser {
     current: NonNullable<XmlStreamingToolCallParser['current']>,
     terminatorLabel: string,
   ): ToolCall {
-    return createToolCallFromInvocation(
-      current.invocationName,
+    return this.createCurrentCallRecord(
       current.externalized
         ? createExternalizedToolPayload(current.id, current.invocationName)
         : {},
       createIncompleteRaw(current, ''),
-      this.catalog,
-      {
-        id: current.id,
-        localSkillDir: this.activeLocalSkillDir,
-        parseError: createToolParseError(
-          MISMATCHED_TOOL_CALL_ERROR_CODE,
-          current.invocationName,
-          `Tool call <${current.invocationName}> was interrupted by ${terminatorLabel} instead of ${current.closeTag}.`,
-        ),
-      },
+      createToolParseError(
+        MISMATCHED_TOOL_CALL_ERROR_CODE,
+        current.invocationName,
+        `Tool call <${current.rawName}> was interrupted by ${terminatorLabel} instead of ${current.closeTag}.`,
+      ),
+      current,
     );
   }
 
@@ -296,12 +317,11 @@ class XmlStreamingToolCallParser implements StreamingToolCallParser {
 
   private createCompletedCall(current: NonNullable<XmlStreamingToolCallParser['current']>): ToolCall {
     if (current.externalized) {
-      return createToolCallFromInvocation(
-        current.invocationName,
+      return this.createCurrentCallRecord(
         createExternalizedToolPayload(current.id, current.invocationName),
         createExternalizedRaw(current),
-        this.catalog,
-        { id: current.id, localSkillDir: this.activeLocalSkillDir },
+        undefined,
+        current,
       );
     }
 
@@ -311,34 +331,23 @@ class XmlStreamingToolCallParser implements StreamingToolCallParser {
     try {
       const parsed = body.length === 0 ? {} : JSON.parse(body);
       if (!isToolPayload(parsed)) {
-        return createToolCallFromInvocation(current.invocationName, {}, raw, this.catalog, {
-          id: current.id,
-          localSkillDir: this.activeLocalSkillDir,
-          parseError: createToolParseError(
-            'tool_call_payload_invalid',
-            current.invocationName,
-            'Tool call body must be a JSON object.',
-          ),
-        });
-      }
-      return createToolCallFromInvocation(current.invocationName, parsed, raw, this.catalog, {
-        id: current.id,
-        localSkillDir: this.activeLocalSkillDir,
-      });
-    } catch (error) {
-      return createToolCallFromInvocation(current.invocationName, {}, raw, this.catalog, {
-        id: current.id,
-        localSkillDir: this.activeLocalSkillDir,
-        parseError: createToolParseError(
-          'tool_call_json_invalid',
+        return this.createCurrentCallRecord({}, raw, createToolParseError(
+          'tool_call_payload_invalid',
           current.invocationName,
-          [
-            'Tool call body is not valid JSON.',
-            'Use double quotes for strings and escape backslashes in local file paths, for example "D:\\\\project\\\\file.txt" or "D:/project/file.txt".',
-            error instanceof Error ? error.message : String(error),
-          ].join(' '),
-        ),
-      });
+          'Tool call body must be a JSON object.',
+        ), current);
+      }
+      return this.createCurrentCallRecord(parsed, raw, undefined, current);
+    } catch (error) {
+      return this.createCurrentCallRecord({}, raw, createToolParseError(
+        'tool_call_json_invalid',
+        current.invocationName,
+        [
+          'Tool call body is not valid JSON.',
+          'Use double quotes for strings and escape backslashes in local file paths, for example "D:\\\\project\\\\file.txt" or "D:/project/file.txt".',
+          error instanceof Error ? error.message : String(error),
+        ].join(' '),
+      ), current);
     }
   }
 
@@ -346,45 +355,84 @@ class XmlStreamingToolCallParser implements StreamingToolCallParser {
     current: NonNullable<XmlStreamingToolCallParser['current']>,
     pendingTail: string,
   ): ToolCall {
-    return createToolCallFromInvocation(
-      current.invocationName,
+    return this.createCurrentCallRecord(
       current.externalized
         ? createExternalizedToolPayload(current.id, current.invocationName)
         : {},
       createIncompleteRaw(current, pendingTail),
-      this.catalog,
-      {
-        id: current.id,
-        localSkillDir: this.activeLocalSkillDir,
-        parseError: createToolParseError(
-          INCOMPLETE_TOOL_CALL_ERROR_CODE,
-          current.invocationName,
-          `Tool call ended before the closing tag ${current.closeTag}.`,
-        ),
-      },
+      createToolParseError(
+        INCOMPLETE_TOOL_CALL_ERROR_CODE,
+        current.invocationName,
+        `Tool call ended before the closing tag ${current.closeTag}.`,
+      ),
+      current,
     );
   }
 
   private createOversizedCall(
     current: NonNullable<XmlStreamingToolCallParser['current']>,
   ): ToolCall {
-    return createToolCallFromInvocation(
-      current.invocationName,
+    return this.createCurrentCallRecord(
       {},
       createOversizedRaw(current),
+      createToolParseError(
+        'tool_call_payload_too_large',
+        current.invocationName,
+        createOversizedToolCallMessage(current.invocationName),
+      ),
+      current,
+    );
+  }
+
+  /**
+   * Builds the emitted record for the current tag match through the shared
+   * variant rule: exact names keep the released factory shape byte-for-byte;
+   * a bound short name executes with its NON-BLOCKING recovery annotation
+   * (a body error wins); an ambiguous name becomes the identity-less
+   * BLOCKING record that feeds the model structured feedback.
+   */
+  private createCurrentCallRecord(
+    payload: Record<string, unknown>,
+    raw: string,
+    specificError: ToolError | undefined,
+    current: NonNullable<XmlStreamingToolCallParser['current']> | null,
+  ): ToolCall {
+    if (current?.resolution === 'ambiguous') {
+      // Bind to the FIRST advertised candidate so the record flows through
+      // the engine's normal tool path (beforeToolCall); the blocking
+      // ambiguity error is what reaches the model. Routing-only binding -
+      // the call never executes and no server is guessed.
+      const name = current.rawName;
+      const bound = createToolCallFromInvocation(
+        this.ambiguousCandidates(name)[0] ?? name,
+        payload,
+        raw,
+        this.catalog,
+        { id: current.id },
+      );
+      return {
+        ...bound,
+        parseError: specificError
+          ?? createNameAmbiguousParseError(name, this.ambiguousCandidates(name)),
+      };
+    }
+    return createToolCallFromInvocation(
+      current?.invocationName ?? '',
+      payload,
+      raw,
       this.catalog,
       {
-        id: current.id,
-        localSkillDir: this.activeLocalSkillDir,
-        parseError: createToolParseError(
-          'tool_call_payload_too_large',
-          current.invocationName,
-          createOversizedToolCallMessage(current.invocationName),
-        ),
+        ...(current?.id ? { id: current.id } : {}),
+        ...(this.activeLocalSkillDir ? { localSkillDir: this.activeLocalSkillDir } : {}),
+        ...(specificError ? { parseError: specificError } : {}),
       },
     );
   }
 
+  private ambiguousCandidates(name: string): string[] {
+    const matches = this.catalog.descriptorsByName.get(name) ?? [];
+    return matches.map((descriptor) => descriptor.invocationName);
+  }
 }
 
 function createEmptyParserEvent(): StreamingToolCallParserEvent {

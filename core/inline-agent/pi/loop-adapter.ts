@@ -36,8 +36,8 @@ import type {
 } from '@earendil-works/pi-agent-core';
 import { runAgentLoop } from '@earendil-works/pi-agent-core';
 import { compactInlineAgentContext, inlineAgentConvertToLlm, type InlineAgentCompactionSummarizer } from './compaction';
+import { isNonBlockingToolParseError } from '../../tool/execution-error';
 import { DEFAULT_LOCALE, translate, type SupportedLocale } from '../../i18n';
-import { TOOL_CALL_DELIMITER_CORRECTED_ERROR_CODE } from '../../tool/execution-error';
 import type { ToolCall, ToolDescriptor, ToolError, ToolExecutionRecord, ToolProviderIdentity } from '../../types';
 import { createClientHeaders } from '../../deepseek/adapter';
 import { getDeepSeekApiKey } from '../../chat/api-key';
@@ -677,14 +677,16 @@ export async function runPiInlineAgentLoop(deps: PiLoopAdapterDeps): Promise<voi
       }
       // P0.2 completion: a recovered parseError on the emitted block
       // (mismatched close, incomplete, invalid payload) must reach the
-      // model's feedback loop exactly like the batch path — the call never
+      // model's feedback loop exactly like the batch path - the call never
       // executes and the reason becomes the error tool result.
-      // EXCEPTION (pc directive 2, 2026-09-18):
-      // `tool_call_delimiter_corrected` is a NON-BLOCKING annotation — a
-      // malformed wrapper around intact invoke content EXECUTES; the
-      // annotation stays on the record for trace visibility only.
+      // EXCEPTION (pc directive 2, 2026-09-18): NON-BLOCKING annotations
+      // (`tool_call_delimiter_corrected`; `tool_call_name_recovered` for a
+      // bound short-form tag, fix round 4 D2) mark recovered calls that
+      // EXECUTE - the annotation stays on the record for trace visibility
+      // only. Blocking codes (including `tool_call_name_ambiguous`) feed the
+      // structured retryable channel below.
       const parseError = (toolCall as { parseError?: ToolError }).parseError;
-      if (parseError && parseError.code !== TOOL_CALL_DELIMITER_CORRECTED_ERROR_CODE) {
+      if (parseError && !isNonBlockingToolParseError(parseError.code)) {
         return {
           block: true,
           reason: `${translate(locale, 'tool.runtime.invalidFormat')} [${parseError.code}] ${parseError.message}`,

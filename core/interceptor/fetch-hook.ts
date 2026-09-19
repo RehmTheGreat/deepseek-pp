@@ -1169,8 +1169,11 @@ export class XmlToolStreamFilter {
     visiblePrompt: string = "",
   ) {
     this.visiblePrompt = visiblePrompt;
+    // Shared scanner truth (D2): the filter suppresses short descriptor-name
+    // variants (`<tool_list>`) exactly like exact invocation-name tags, so a
+    // tool call can never render as plain text on either side of the loop.
     this.toolInvocationNameSet = new Set(
-      createToolInvocationCatalog(descriptors).invocationNames,
+      createToolInvocationCatalog(descriptors).toolTagNames,
     );
   }
 

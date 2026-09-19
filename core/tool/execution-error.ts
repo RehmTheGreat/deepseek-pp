@@ -14,6 +14,23 @@ export const MISMATCHED_TOOL_CALL_ERROR_CODE = 'tool_call_close_mismatched';
 // on the record for trace/restore visibility only. All other codes above and
 // below remain blocking and model-visible.
 export const TOOL_CALL_DELIMITER_CORRECTED_ERROR_CODE = 'tool_call_delimiter_corrected';
+// A tag written with a tool's SHORT descriptor name (live: `<tool_list>`
+// instead of `mcp_t_<server>_tool_list`, fix round 4 D2) that matches SEVERAL
+// advertised tools. Blocking: no silent arbitrary server selection - the
+// structured, model-visible error names every full advertised tag so the
+// model can disambiguate. (A unique short name is an accepted catalog alias
+// and executes cleanly.)
+export const TOOL_CALL_NAME_AMBIGUOUS_ERROR_CODE = 'tool_call_name_ambiguous';
+
+/**
+ * Parse-error codes that are NON-BLOCKING annotations: the recovered call
+ * EXECUTES and the annotation stays on the record for trace visibility only
+ * (pc directive 2). Every other code blocks the call through the structured
+ * retryable feedback channel.
+ */
+export function isNonBlockingToolParseError(code: string | undefined): boolean {
+  return code === TOOL_CALL_DELIMITER_CORRECTED_ERROR_CODE;
+}
 
 export class ToolPostEffectPersistenceError extends Error {
   readonly code = 'tool_post_effect_persistence_failed' as const;

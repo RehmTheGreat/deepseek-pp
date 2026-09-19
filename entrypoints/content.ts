@@ -7034,10 +7034,13 @@ function buildToolTagPattern(descriptors: ToolDescriptor[]): string {
   // The scrub regexes recognize every ADVERTISED tool: the shared catalog
   // never lists subagent_spawn, but native turns advertise and execute it
   // through merged grants, so rendered spawn markup must strip too (Defect 3,
-  // 2026-09-18). Strip symmetry: recognize == strip.
+  // 2026-09-18). Strip symmetry: recognize == strip. The shared tag set also
+  // covers short descriptor-name variants (`<tool_list>` for
+  // `mcp_t_<server>_tool_list`, fix round 4 D2) - the ONE scan truth shared
+  // with the parsers, the stream filter, and history cleanup.
   const catalogNames = createToolInvocationCatalog(
     withInlineAgentSpawnDisplayDescriptor(descriptors),
-  ).invocationNames;
+  ).toolTagNames;
   const escaped = [...new Set(catalogNames)].map(escapeRegExp);
   return escaped.length > 0 ? escaped.join("|") : "(?!)";
 }

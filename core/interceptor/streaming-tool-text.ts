@@ -20,7 +20,9 @@ export function createStreamingToolTextAccumulator(
   descriptors: readonly ToolDescriptor[],
 ): StreamingToolTextAccumulator {
   const catalog = createToolInvocationCatalog(descriptors);
-  return new ToolTextAccumulator(catalog.invocationNames);
+  // Shared scanner truth (D2): short descriptor-name variants are suppressed
+  // from the visible text exactly like exact invocation-name tags.
+  return new ToolTextAccumulator(catalog.toolTagNames);
 }
 
 /**

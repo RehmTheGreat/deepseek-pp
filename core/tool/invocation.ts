@@ -21,6 +21,19 @@ export interface ToolInvocationCatalog {
   descriptorByInvocationName: Map<string, ToolDescriptor>;
   descriptorByName: Map<string, ToolDescriptor>;
   invocationNamesByDescriptorId: Map<string, string[]>;
+  /**
+   * The full tool-TAG scan set: every advertised invocation name plus every
+   * advertised descriptor name (fix round 4, D2). Models shorten
+   * `mcp_t_<server>_tool_list` to `<tool_list>`; ONE shared scanner truth
+   * must claim those bytes on every surface (loop parser, page filter,
+   * display/history strip) so a tool call can never render as plain text.
+   * Resolution stays exact: `resolveToolTagName` (core/tool/tag-variants.ts)
+   * binds an unambiguous short name to its descriptor and reports ambiguous
+   * ones as a structured error instead of guessing a server.
+   */
+  toolTagNames: string[];
+  /** All descriptors per plain descriptor name (variant resolution). */
+  descriptorsByName: Map<string, ToolDescriptor[]>;
 }
 
 export interface ToolParsingInput {
@@ -40,11 +53,18 @@ export function createToolInvocationCatalog(
   const descriptorByName = new Map<string, ToolDescriptor>();
   const invocationNamesByDescriptorId = new Map<string, string[]>();
   const toolNameCounts = new Map<string, number>();
+  const descriptorsByName = new Map<string, ToolDescriptor[]>();
 
   for (const descriptor of descriptors) {
     const name = descriptor.name.trim();
     if (!isValidToolTagName(name)) continue;
     toolNameCounts.set(name, (toolNameCounts.get(name) ?? 0) + 1);
+    const named = descriptorsByName.get(name);
+    if (named) {
+      if (!named.includes(descriptor)) named.push(descriptor);
+    } else {
+      descriptorsByName.set(name, [descriptor]);
+    }
   }
 
   for (const descriptor of descriptors) {
@@ -77,6 +97,13 @@ export function createToolInvocationCatalog(
     descriptorByInvocationName,
     descriptorByName,
     invocationNamesByDescriptorId,
+    toolTagNames: [
+      ...descriptorByInvocationName.keys(),
+      ...[...descriptorsByName.keys()].filter(
+        (name) => !descriptorByInvocationName.has(name),
+      ),
+    ],
+    descriptorsByName,
   };
   catalogCache.set(descriptors, catalog);
   return catalog;
@@ -161,7 +188,7 @@ export function getToolCloseTag(invocationName: string): string {
 }
 
 export function hasXmlToolMarker(text: string, catalog: ToolInvocationCatalog): boolean {
-  const names = new Set(catalog.invocationNames);
+  const names = new Set(catalog.toolTagNames);
   return Boolean(
     findFirstXmlToolTag(text, names, { closing: false }) ||
     findFirstXmlToolTag(text, names, { closing: true }),
