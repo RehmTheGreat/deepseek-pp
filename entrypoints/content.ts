@@ -93,6 +93,7 @@ import {
 import type { DeepSeekSessionState } from "../core/inline-agent/pi/stream-fn-port";
 import {
   closeInterruptedTrace,
+  healAbandonedRunningTrace,
   type CloseInterruptedTraceOptions,
 } from "../core/inline-agent/trace-status";
 import {
@@ -922,6 +923,10 @@ export default defineContentScript({
   runAt: "document_start",
   async main() {
     extensionContextValid = true;
+    // D1 (fix round 4): a page going away mid-run (navigation, tab close,
+    // browser quit) previously left the active loop's trace `running` forever
+    // - the loop just died with the document. Finalize honestly instead.
+    window.addEventListener("pagehide", finalizeInlineAgentRunOnPageHide);
     const controllers = createContentCapabilityControllers();
     const lifecycle = await replaceContentDocumentLifecycle({
       capabilities: controllers,
@@ -5286,6 +5291,42 @@ function isInlineAgentRunning(): boolean {
 }
 
 /**
+ * pagehide finalizer (D1a, fix round 4): when the page goes away mid-run the
+ * loop can never post its terminal event, so the run is finalized honestly
+ * here instead of dying into a silent `running` zombie (reproduced live as
+ * trace pyr24x). Reuses the existing stop semantics - the honest `stopping`
+ * terminal status via `closeInterruptedTrace` plus the standard abort - with
+ * no new loop status values and no DOM work (the document is going away).
+ * The `{ immediate: true }` write bypasses the persistence debounce because
+ * pagehide kills pending timers; if the write still loses the race, the
+ * restore-pass zombie healing finalizes the row on the next load.
+ */
+function finalizeInlineAgentRunOnPageHide(): void {
+  if (!activeAgentAbort) return;
+  const trace = activeInlineAgentTrace;
+  if (trace && trace.status === "running") {
+    updateActiveInlineAgentTrace(
+      (current) =>
+        closeInterruptedTrace(current, contentT("content.agent.stopped")),
+      { immediate: true },
+    );
+  }
+  flushPendingInlineAgentStreamRender();
+  stopAgentConsoleTimer();
+  pendingAgentReasoningByStep.clear();
+  resetInlineAgentChildConsoleState();
+  inlineAgentLoopId = null;
+  inlineAgentContainer = null;
+  inlineAgentCurrentStep = null;
+  activeInlineAgentTrace = null;
+  activeAgentModelBackend = null;
+  inlineAgentContainerObserver?.disconnect();
+  inlineAgentContainerObserver = null;
+  activeAgentAbort.abort();
+  activeAgentAbort = null;
+}
+
+/**
  * Synchronously detach the current agent panel and reset the module-level
  * bookkeeping. Does NOT abort the loop (the caller owns that) and does NOT
  * render a footer - used when a new loop supersedes an in-flight one so the
@@ -7270,16 +7311,34 @@ async function restorePersistedInlineAgentTraces(
   let changed = false;
 
   for (const trace of traces) {
+    // D1 zombie healing (fix round 4): ANY stored `running` row without a
+    // live loop is finalized honestly on restore, whether or not its chat
+    // session is on screen. The reproduced pyr24x zombie stayed `running` for
+    // four hours because the old cleanup only ran when the same chat was
+    // revisited. A live loop's own row is never touched (never resurrected,
+    // never left running - there is no third option).
+    const healedTrace = healAbandonedRunningTrace(
+      trace,
+      inlineAgentLoopId,
+      contentT("content.agent.stopped"),
+    );
     if (
       !shouldTryRestoreInlineAgentTrace(trace, url) ||
       restoredInlineAgentTraces.has(trace.id)
-    )
+    ) {
+      // Off-route or already-restored rows get no normalize pass below, so
+      // the healing flip alone must reach storage here.
+      if (healedTrace) {
+        observeReportedPersistence(writeInlineAgentTrace(healedTrace));
+      }
       continue;
+    }
     const normalized = normalizeRestoredInlineAgentTrace(trace);
     restoredInlineAgentTraces.set(trace.id, normalized);
     // The in-memory repair must also reach storage: without this write the
     // record keeps `status: 'running'` on disk forever (Task 6). Written once
-    // per trace - the restored-set dedupe above makes it idempotent.
+    // per trace - the restored-set dedupe above makes it idempotent, and the
+    // normalized record carries the healing flip for rows healed above.
     if (trace.status === "running") {
       observeReportedPersistence(writeInlineAgentTrace(normalized));
     }

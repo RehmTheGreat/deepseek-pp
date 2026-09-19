@@ -38,3 +38,21 @@ export function closeInterruptedTrace(
     updatedAt: Date.now(),
   };
 }
+
+/**
+ * Zombie healing (fix round 4, D1c): a stored `running` row whose loop is not
+ * live in this document can never receive a terminal event - it is finalized
+ * honestly (never resurrected, never left running). Returns the CLOSED record
+ * when the trace is an abandoned `running` row, and `null` when nothing needs
+ * healing (terminal trace, or the row belongs to the currently live loop).
+ * Pure; the caller owns persistence.
+ */
+export function healAbandonedRunningTrace(
+  trace: InlineAgentTraceRecord,
+  liveLoopId: string | null,
+  error: string,
+): InlineAgentTraceRecord | null {
+  if (trace.status !== 'running') return null;
+  if (liveLoopId !== null && trace.loopId === liveLoopId) return null;
+  return closeInterruptedTrace(trace, error);
+}

@@ -203,6 +203,18 @@ export const INLINE_AGENT_STEP_TIMEOUT_MS = 120_000;
 // bounded so a stranded background handler cannot freeze the loop at
 // `executing_tools` forever.
 export const INLINE_AGENT_TOOL_CALL_TIMEOUT_MS = 180_000;
+// No-event liveness watchdog (fix round 4, D1b): if the loop posts no AGENT_*
+// event and runs no tool activity for this long, the run is dead (the
+// reproduced zombie went silent for four hours) and the watchdog finalizes it
+// with a structured error instead of leaving a `running` trace forever. The
+// threshold must be strictly ABOVE the longest legal no-event stretch of ONE
+// turn - every phase boundary posts an event, so phases never accumulate.
+// Worst single-turn quiet chain, all hard deadlines: PoW solve+retry
+// (2 x 20s PoW deadline + 6.5s pacing) + no-chunk stream retry (2 x 120s step
+// timeout + 6.5s pacing) = 293s. 300s clears that bound, so a legitimately
+// slow run (slow tool phases bounded at 180s, slow streams bounded at 120s
+// per attempt, DeepThink pauses included) can never trip it.
+export const INLINE_AGENT_LOOP_EVENT_WATCHDOG_MS = 300_000;
 export const INLINE_AGENT_REQUEST_DELAY_MIN_MS = 2_500;
 export const INLINE_AGENT_REQUEST_DELAY_MAX_MS = 6_500;
 // Autocompact (uniform-tools Task 5): the summarization request is a full

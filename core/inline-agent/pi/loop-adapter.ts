@@ -68,7 +68,7 @@ import type {
   InlineAgentStreamChunkMsg,
   InlineAgentToolDetectedMsg,
 } from '../types';
-import { INLINE_AGENT_COMPACTION_TIMEOUT_MS, INLINE_AGENT_MAX_RESUMES, INLINE_AGENT_MAX_STEPS } from '../types';
+import { INLINE_AGENT_COMPACTION_TIMEOUT_MS, INLINE_AGENT_LOOP_EVENT_WATCHDOG_MS, INLINE_AGENT_MAX_RESUMES, INLINE_AGENT_MAX_STEPS } from '../types';
 import { waitBetweenDeepSeekRequests } from '../step-control';
 
 export type PostFn = (type: string, data: unknown) => void;
@@ -76,6 +76,16 @@ export type ExecuteToolFn = (call: ToolCall) => Promise<ToolExecutionRecord>;
 
 const INLINE_AGENT_STREAM_EVENT_MAX_CHARS = 12000;
 const TRUNCATION_SUFFIX = '\n...[truncated]';
+
+/**
+ * Model-visible message the no-event watchdog (D1b) finalizes a silent run
+ * with. Structured and honest: the run produced no events for the watchdog
+ * threshold, so it is finalized as an error instead of staying a silent
+ * `running` zombie (the reproduced pyr24x failure: 6 steps, then nothing -
+ * no terminal event, no resume, a `running` trace for four hours).
+ */
+export const INLINE_AGENT_LOOP_WATCHDOG_ERROR_MESSAGE =
+  `DeepSeek agent loop produced no events for ${INLINE_AGENT_LOOP_EVENT_WATCHDOG_MS / 1000}s; the run was finalized by the liveness watchdog.`;
 
 /** Overrides for the memoized transform's compaction decision (tests only; the loop uses the released defaults). */
 export interface CompactionMemoOptions {
@@ -151,10 +161,64 @@ export interface PiLoopAdapterDeps {
 
 /** Runs the pi engine with the released inline-agent semantics. */
 export async function runPiInlineAgentLoop(deps: PiLoopAdapterDeps): Promise<void> {
-  const { payload, post, executeTool, signal, sessionRef } = deps;
+  const { payload, executeTool, signal, sessionRef } = deps;
+  const outgoingPost = deps.post;
   const { loopId, chatSessionId, toolDescriptors, promptOptions } = payload;
   const { powWasmUrl } = payload;
   const locale = payload.locale ?? DEFAULT_LOCALE;
+
+  // ------------------------------------------------------ liveness watchdog
+  // D1b (fix round 4): deadlines bound single awaits only, so a loop whose
+  // engine goes quiet between two events left a `running` zombie trace
+  // forever (live trace pyr24x: 6 steps, then no 7th request, no terminal
+  // event, no resume). This watchdog requires PROGRESS PROOF: every AGENT_*
+  // event post and every tool invocation resets it. If nothing happens for
+  // INLINE_AGENT_LOOP_EVENT_WATCHDOG_MS - strictly above the 180s tool
+  // deadline and the 120s step/compaction timeouts, so no legitimately slow
+  // run can ever trip it - the engine is aborted and the run finalized with a
+  // structured, model-visible error instead of dying silently.
+  let watchdogTimer: ReturnType<typeof setTimeout> | null = null;
+  let finalizeDone = false;
+  const fireWatchdog = () => {
+    watchdogTimer = null;
+    if (finalizeDone || signal.aborted) return;
+    finalizeDone = true;
+    outgoingPost('AGENT_LOOP_ERROR', {
+      loopId,
+      stepIndex,
+      totalTools: collectedExecutions.length,
+      error: INLINE_AGENT_LOOP_WATCHDOG_ERROR_MESSAGE,
+    });
+    engineAbort.abort();
+  };
+  const pokeWatchdog = () => {
+    if (finalizeDone) return;
+    if (watchdogTimer !== null) clearTimeout(watchdogTimer);
+    watchdogTimer = setTimeout(fireWatchdog, INLINE_AGENT_LOOP_EVENT_WATCHDOG_MS);
+  };
+  const stopWatchdog = () => {
+    if (watchdogTimer !== null) {
+      clearTimeout(watchdogTimer);
+      watchdogTimer = null;
+    }
+  };
+  const post: PostFn = (type, data) => {
+    pokeWatchdog();
+    outgoingPost(type, data);
+  };
+  // Tool-phase activity counts as an event: a tool may legally sit silent up
+  // to its 180s deadline, so its start AND end both reset the watchdog.
+  const monitoredExecuteTool: ExecuteToolFn = (call) => {
+    pokeWatchdog();
+    return executeTool(call).finally(pokeWatchdog);
+  };
+  // The watchdog aborts ONLY the engine (never the caller's public signal, so
+  // the released silent-user-abort semantics stay untouched); the caller's
+  // abort still reaches the engine through this combined controller.
+  const engineAbort = new AbortController();
+  const abortEngineWithRun = () => engineAbort.abort();
+  if (signal.aborted) abortEngineWithRun();
+  else signal.addEventListener('abort', abortEngineWithRun, { once: true });
 
   // ------------------------------------------------------------------ state
   const session: DeepSeekSessionState = {
@@ -215,7 +279,6 @@ export async function runPiInlineAgentLoop(deps: PiLoopAdapterDeps): Promise<voi
   let lastPostedText = '';
   let stepReasoning = ''; // current step's accumulated reasoning text (per-turn thinking deltas)
   let lastPostedReasoning = '';
-  let finalizeDone = false;
   let resolvedFinalText: string | null = null;
   let stopNotice: string | null = null;
   let lastTurnWasError = false;
@@ -423,7 +486,9 @@ export async function runPiInlineAgentLoop(deps: PiLoopAdapterDeps): Promise<voi
   // (released request pacing).
   const pacedStreamFn: StreamFn = async (model, context, options) => {
     if (requestCount > 0) {
-      await waitBetweenDeepSeekRequests(signal);
+      // The watchdog-aborted engine unwinds the pacing sleep too, so a fired
+      // watchdog cannot sit waiting on a between-request delay.
+      await waitBetweenDeepSeekRequests(engineAbort.signal);
     }
     requestCount += 1;
     return streamFn(model, context, options);
@@ -431,7 +496,7 @@ export async function runPiInlineAgentLoop(deps: PiLoopAdapterDeps): Promise<voi
 
   const piTools = createPiAgentTools({
     descriptors: toolDescriptors,
-    executeTool,
+    executeTool: monitoredExecuteTool,
     callSource: {
       requestId: payload.capabilityScopeRequestId ?? `agent:${loopId}`,
       chatSessionId,
@@ -473,7 +538,7 @@ export async function runPiInlineAgentLoop(deps: PiLoopAdapterDeps): Promise<voi
         && (!!spawnCall.id && execution.callId === spawnCall.id
           || (!spawnCall.id && execution.name === (spawnCall.invocationName ?? spawnCall.name))));
       if (seedIndex >= 0) collectedExecutions.splice(seedIndex, 1);
-      seedRecords.push(await executeTool(spawnCall));
+      seedRecords.push(await monitoredExecuteTool(spawnCall));
     }
     if (seedRecords.length > 0) {
       collectedExecutions.push(...seedRecords);
@@ -801,7 +866,7 @@ export async function runPiInlineAgentLoop(deps: PiLoopAdapterDeps): Promise<voi
         { systemPrompt: '', messages: [], tools: piTools },
         config,
         handleEvent,
-        signal,
+        engineAbort.signal,
         pacedStreamFn,
       );
       if (finalizeDone) break; // engine already finalized (defensive)
@@ -866,6 +931,11 @@ export async function runPiInlineAgentLoop(deps: PiLoopAdapterDeps): Promise<voi
       totalTools: collectedExecutions.length,
       error: err instanceof Error ? err.message : String(err),
     });
+  } finally {
+    // The run settled (or the watchdog took it over): stop the liveness timer
+    // and detach the abort forwarder so nothing outlives the run.
+    stopWatchdog();
+    signal.removeEventListener('abort', abortEngineWithRun);
   }
 }
 

@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { closeInterruptedTrace } from '../core/inline-agent/trace-status';
+import { closeInterruptedTrace, healAbandonedRunningTrace } from '../core/inline-agent/trace-status';
 import type { InlineAgentTraceRecord } from '../core/inline-agent/types';
 
 function trace(
@@ -104,3 +104,26 @@ describe('closeInterruptedTrace', () => {
 type InlineAgentLoopStatusTable = Array<
   [Exclude<InlineAgentTraceRecord['status'], 'running'>]
 >;
+
+describe('healAbandonedRunningTrace (D1 zombie healing, fix round 4)', () => {
+  it('closes an abandoned running row as stopping', () => {
+    const zombie = trace();
+    const healed = healAbandonedRunningTrace(zombie, null, 'Stopped by reload');
+    expect(healed).not.toBeNull();
+    expect(healed!.status).toBe('stopping');
+    expect(healed!.error).toBe('Stopped by reload');
+    expect(healed!.loopId).toBe('loop-1');
+  });
+
+  it('never heals the live loop own running row', () => {
+    const live = trace();
+    expect(healAbandonedRunningTrace(live, 'loop-1', 'Stopped')).toBeNull();
+  });
+
+  it('never resurrects or rewrites terminal rows', () => {
+    const done = trace({ status: 'complete', finalText: 'answer' });
+    const failed = trace({ status: 'error', error: 'boom' });
+    expect(healAbandonedRunningTrace(done, null, 'Stopped')).toBeNull();
+    expect(healAbandonedRunningTrace(failed, null, 'Stopped')).toBeNull();
+  });
+});
