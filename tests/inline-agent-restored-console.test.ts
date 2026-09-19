@@ -47,8 +47,12 @@ describe('restored inline-agent console (source contracts, content entrypoint pa
     // native page owns, which is by definition tool-free. Any other step —
     // in particular every step with tool calls — must mount.
     expect(loop).toContain(
-      'if (\n      nativeHistoryOwnsFinalTurn &&\n      step.index === lastStepIndex &&\n      step.toolExecutions.length === 0\n    ) {\n      continue;\n    }',
+      'if (\n      nativeHistoryOwnsFinalTurn &&\n      step.index === lastStepIndex &&\n      step.toolExecutions.length === 0\n    ) {',
     );
+    // D4: inside that skip branch, the final turn's reasoning is hydrated
+    // from the trace (the native bubble owns only the markdown answer).
+    expect(loop).toContain('nativeHistoryOwnsFinalTurn && step.reasoning');
+    expect(loop).toContain('mountRestoredAgentStep(\n          consoleBody,');
     expect(loop).toMatch(/mountRestoredAgentStep\(\s*consoleBody,\s*\{/);
     // The step's tool executions reach the restored mount…
     expect(loop).toContain('toolExecutions: step.toolExecutions,');
@@ -130,5 +134,19 @@ describe('restored inline-agent console (source contracts, content entrypoint pa
     expect(pairFn).toContain('anchorContent');
     expect(pairFn).toContain('.trim().length > 0');
     expect(pairFn).toContain('data-dpp-stripped-note');
+  });
+
+  it('hydrates the native-owned final turn reasoning from the stored trace (D4)', () => {
+    // The DS history API omits thinking_content, so after the post-run
+    // reload the final turn's reasoning would be lost: the console skips
+    // re-rendering the final step (the native bubble owns its markdown) and
+    // the native bubble cannot show reasoning. When the trace captured the
+    // final turn's reasoning, the restored console hydrates it as a
+    // reasoning-only step; traces without reasoning restore exactly as
+    // before.
+    const createFn = afterMarker('function createRestoredInlineAgentContainer(')
+      .split('\nfunction ')[0];
+    expect(createFn).toContain('nativeHistoryOwnsFinalTurn && step.reasoning');
+    expect(createFn).toContain('mountRestoredAgentStep(');
   });
 });

@@ -8344,8 +8344,9 @@ function collapseRestoredInlineAgentStepMessages(
       ) {
         continue;
       }
-      message.setAttribute("data-dpp-collapsed-inline-agent-step", "true");
-      message.style.display = "none";
+      const element = message as HTMLElement;
+      element.setAttribute("data-dpp-collapsed-inline-agent-step", "true");
+      element.style.display = "none";
       usedMessages.add(message);
     }
   }
@@ -8502,6 +8503,25 @@ function createRestoredInlineAgentContainer(
       step.index === lastStepIndex &&
       step.toolExecutions.length === 0
     ) {
+      // D4 (fix round 4): the native bubble owns the final turn's MARKDOWN,
+      // but the DS history API omits thinking_content - without hydration
+      // the final turn's reasoning is lost on every restored view. When the
+      // trace captured it, mount the reasoning-only step (the existing
+      // renderer branch); the native bubble keeps owning the answer text.
+      // A trace without reasoning restores exactly as before.
+      if (nativeHistoryOwnsFinalTurn && step.reasoning) {
+        mountRestoredAgentStep(
+          consoleBody,
+          {
+            index: step.index,
+            status: step.status,
+            reasoning: step.reasoning,
+            toolExecutions: [],
+            renderText: "",
+          },
+          getAgentRendererLabels(),
+        );
+      }
       continue;
     }
     const stepText = getInlineAgentRestoredStepText(step.text) || step.text;
