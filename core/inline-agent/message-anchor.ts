@@ -157,3 +157,75 @@ export function findInlineAgentRestoreTarget(
 
   return null;
 }
+
+// ---------------------------------------------------------------------------
+// Trace-owned step collapse (fix round 4, D3)
+// ---------------------------------------------------------------------------
+
+export interface TraceOwnedStepRecord {
+  readonly index: number;
+  readonly responseMessageId: number | null;
+  readonly text: string;
+}
+
+/**
+ * Matches a restored run's loop-step messages in the rendered native history
+ * so the restore flow can COLLAPSE them: the loop commits every step to the
+ * native chain, and after a reload each step renders as a standalone native
+ * bubble - double-rendering content the restored console already owns (worst
+ * live case: the previous turn's full answer "reappearing" as a surprise).
+ *
+ * Identity rules, in order of trust (mirrors findInlineAgentRestoreTarget):
+ *  1. the step's committed responseMessageId when the DOM exposes it;
+ *  2. the step's own persisted text, markdown-normalized, same as anchoring.
+ * Steps are processed in order and each match constrains the next search to
+ * later document positions (steps commit in order), which also stops a later
+ * step from consuming an earlier message. Already-used messages (consoles,
+ * earlier collapses) are skipped; weak text (<12 normalized chars, the same
+ * floor as content anchoring) never matches - no match is better than a
+ * wrong collapse.
+ */
+export function matchTraceOwnedStepMessages(
+  messages: Element[],
+  steps: readonly TraceOwnedStepRecord[],
+  usedMessages: Set<Element>,
+): Map<number, Element> {
+  const matched = new Map<number, Element>();
+  let searchFrom = 0;
+
+  for (const step of steps) {
+    let matchedIndex = -1;
+
+    if (step.responseMessageId !== null && step.responseMessageId > 0) {
+      const id = String(step.responseMessageId);
+      for (let i = searchFrom; i < messages.length; i += 1) {
+        if (usedMessages.has(messages[i])) continue;
+        if (elementHasMessageId(messages[i], id)) {
+          matchedIndex = i;
+          break;
+        }
+      }
+    }
+
+    if (matchedIndex === -1) {
+      const snippet = normalizeAnchorText(step.text).slice(0, 100);
+      if (snippet.length >= 12) {
+        for (let i = searchFrom; i < messages.length; i += 1) {
+          const message = messages[i];
+          if (usedMessages.has(message)) continue;
+          if (normalizeAnchorText(getAssistantMessageOwnText(message)).includes(snippet)) {
+            matchedIndex = i;
+            break;
+          }
+        }
+      }
+    }
+
+    if (matchedIndex !== -1) {
+      matched.set(step.index, messages[matchedIndex]);
+      searchFrom = matchedIndex + 1;
+    }
+  }
+
+  return matched;
+}

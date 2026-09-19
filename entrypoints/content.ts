@@ -124,6 +124,7 @@ import {
   elementHasMessageId,
   findAssistantMessageByContentSnippet,
   findInlineAgentRestoreTarget,
+  matchTraceOwnedStepMessages,
 } from "../core/inline-agent/message-anchor";
 import type {
   InlineAgentStartPayload,
@@ -8252,7 +8253,12 @@ function renderRestoredInlineAgentTraces(): number {
   const messages = getAssistantMessages();
   if (messages.length === 0) return pendingRestoredInlineAgentTraceIds.size;
 
-  const usedMessages = new Set<Element>();
+  // Already-collapsed step messages are permanently consumed: consoles and
+  // other traces must never anchor on (or re-collapse) a hidden bubble.
+  const usedMessages = new Set<Element>(
+    messages.filter((message) =>
+      message.getAttribute("data-dpp-collapsed-inline-agent-step") === "true"),
+  );
 
   for (const id of [...pendingRestoredInlineAgentTraceIds]) {
     const trace = restoredInlineAgentTraces.get(id);
@@ -8279,7 +8285,70 @@ function renderRestoredInlineAgentTraces(): number {
   }
 
   pairNotedEmptyMessagesWithTraces(messages, usedMessages);
+  collapseRestoredInlineAgentStepMessages(messages, usedMessages);
   return pendingRestoredInlineAgentTraceIds.size;
+}
+
+/**
+ * Collapses the native bubbles the restored consoles already own (fix round
+ * 4, D3). Every loop step is committed to the native chain, so after a reload
+ * each step renders as a standalone native bubble - double-rendering the run
+ * record and, in the reproduced case, revealing the PREVIOUS turn's full
+ * answer as a surprise "better version". Extends the
+ * `nativeHistoryOwnsFinalTurn` ownership principle from the final turn to
+ * every intermediate step: the console renders the step; the native copy is
+ * hidden. The final answer of a native-backed complete run keeps its native
+ * bubble (that is the surface the final turn was re-anchored on), and
+ * intentionally annotated stripped bubbles (tool-first pairing anchors) are
+ * never touched. Re-runs on every render pass; matching is idempotent via the
+ * data marker.
+ */
+function collapseRestoredInlineAgentStepMessages(
+  messages: Element[],
+  usedMessages: Set<Element>,
+): void {
+  const currentUrl = getToolBlockUrl();
+  for (const trace of restoredInlineAgentTraces.values()) {
+    if (!shouldTryRestoreInlineAgentTrace(trace, currentUrl)) continue;
+    // Only collapse for runs whose console is actually restored: hiding the
+    // native copies of steps whose console never mounted would lose content.
+    if (!findRestoredInlineAgentTrace(trace.id)) continue;
+
+    const sortedSteps = [...trace.steps].sort((a, b) => a.index - b.index);
+    if (sortedSteps.length === 0) continue;
+    const lastStepIndex = sortedSteps[sortedSteps.length - 1].index;
+    const lastStepRecord = sortedSteps[sortedSteps.length - 1];
+    // Same ownership condition as the console's final-turn skip: the native
+    // page owns the final answer of a native-backed, non-budget-paused run.
+    const nativeHistoryOwnsFinalTurn =
+      lastStepRecord.toolExecutions.length === 0 &&
+      isInlineAgentNativeHistoryBackedTrace(trace);
+    const collapsible = sortedSteps.filter((step) =>
+      !(nativeHistoryOwnsFinalTurn && step.index === lastStepIndex));
+    if (collapsible.length === 0) continue;
+
+    // A message hosting extension UI or an intentional stripped-note marker
+    // is never a collapse target (tool-first pairing anchors on those).
+    const candidates = collapsible.map((step) => ({
+      index: step.index,
+      responseMessageId: step.responseMessageId,
+      text: getInlineAgentRestoredStepText(step.text) || step.text,
+    }));
+    const matched = matchTraceOwnedStepMessages(messages, candidates, usedMessages);
+    for (const message of matched.values()) {
+      if (usedMessages.has(message)) continue;
+      if (
+        message.querySelector(
+          '.dpp-agent-container, [data-dpp-stripped-note="true"]',
+        )
+      ) {
+        continue;
+      }
+      message.setAttribute("data-dpp-collapsed-inline-agent-step", "true");
+      message.style.display = "none";
+      usedMessages.add(message);
+    }
+  }
 }
 
 /**
