@@ -65,4 +65,16 @@ describe('status-line pluralization (O3)', () => {
       }
     }
   });
+
+  it('passes the unit params at every subagent status call site', () => {
+    const source = readFileSync(join(process.cwd(), 'entrypoints/content.ts'), 'utf8');
+    for (const key of ['subagentComplete', 'subagentError']) {
+      const call = source.match(
+        new RegExp(`contentT\\("content\\.agent\\.${key}", \\{([\\s\\S]*?)\\}\\)`),
+      );
+      expect(call, `expected a contentT call site for ${key}`).toBeTruthy();
+      expect(call?.[1], `${key} must pass stepUnit`).toContain('stepUnit:');
+      expect(call?.[1], `${key} must pass toolUnit`).toContain('toolUnit:');
+    }
+  });
 });

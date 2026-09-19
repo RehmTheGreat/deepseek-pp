@@ -660,6 +660,17 @@ function contentT(key: LocaleMessageKey, params?: MessageParams): string {
   return currentContentTranslator.t(key, params);
 }
 
+// Plural-aware status unit (O3 wave 3): "1 step"/"2 steps",
+// "1 tool call"/"3 tool calls"; zh units have a single form. Shared by every
+// status-line call site so none renders a bare interpolation placeholder.
+function agentStatusUnit(
+  oneKey: Parameters<typeof contentT>[0],
+  manyKey: Parameters<typeof contentT>[0],
+  count: number,
+): string {
+  return contentT(count === 1 ? oneKey : manyKey);
+}
+
 async function refreshContentLocale(): Promise<void> {
   const resolved = await getResolvedLocaleState();
   currentContentLocale = resolved.locale;
@@ -692,11 +703,7 @@ function refreshLocalizedContentSurfaces(): void {
 function getAgentRendererLabels() {
   // O3 (wave 3): counts pluralize - "1 step"/"2 steps", "1 tool call"/
   // "3 tool calls" - via the unit keys; zh units have a single form.
-  const unit = (
-    oneKey: Parameters<typeof contentT>[0],
-    manyKey: Parameters<typeof contentT>[0],
-    count: number,
-  ) => contentT(count === 1 ? oneKey : manyKey);
+  const unit = agentStatusUnit;
   return {
     starting: contentT("content.agent.starting"),
     stop: contentT("content.agent.stop"),
@@ -5049,7 +5056,17 @@ function handleInlineAgentChildLoopEvent(
         "complete",
         contentT("content.agent.subagentComplete", {
           steps: complete.totalSteps,
+          stepUnit: agentStatusUnit(
+            "content.agent.stepUnitOne",
+            "content.agent.stepUnitMany",
+            complete.totalSteps,
+          ),
           tools: complete.totalTools,
+          toolUnit: agentStatusUnit(
+            "content.agent.toolUnitOne",
+            "content.agent.toolUnitMany",
+            complete.totalTools,
+          ),
         }),
       );
       if (stream) {
@@ -5066,7 +5083,17 @@ function handleInlineAgentChildLoopEvent(
         "error",
         contentT("content.agent.subagentError", {
           steps: failure.stepIndex,
+          stepUnit: agentStatusUnit(
+            "content.agent.stepUnitOne",
+            "content.agent.stepUnitMany",
+            failure.stepIndex,
+          ),
           tools: failure.totalTools,
+          toolUnit: agentStatusUnit(
+            "content.agent.toolUnitOne",
+            "content.agent.toolUnitMany",
+            failure.totalTools,
+          ),
         }),
       );
       if (stream) finalizePendingAgentToolEntries(stream);
