@@ -924,10 +924,6 @@ export default defineContentScript({
   runAt: "document_start",
   async main() {
     extensionContextValid = true;
-    // D1 (fix round 4): a page going away mid-run (navigation, tab close,
-    // browser quit) previously left the active loop's trace `running` forever
-    // - the loop just died with the document. Finalize honestly instead.
-    window.addEventListener("pagehide", finalizeInlineAgentRunOnPageHide);
     const controllers = createContentCapabilityControllers();
     const lifecycle = await replaceContentDocumentLifecycle({
       capabilities: controllers,
@@ -1206,6 +1202,13 @@ function startInlineAgentCapability(
 ): void {
   inlineAgentCapabilityScope = scope;
   const epoch = ++inlineAgentCapabilityEpoch;
+  // D1 (fix round 4): a page going away mid-run (navigation, tab close,
+  // browser quit) previously left the active loop's trace `running` forever
+  // - the loop just died with the document. Finalize honestly instead. The
+  // listener is capability-owned (ownership contract: no entrypoint-level
+  // document listeners); it fires synchronously in the pagehide dispatch,
+  // before the shared lifecycle's asynchronous stop unwind releases it.
+  scope.listen(window, "pagehide", finalizeInlineAgentRunOnPageHide);
   startInlineAgentContinuationMessageHider(scope, mutationHub);
   observeReportedPersistence(restorePersistedInlineAgentTraces(scope, epoch));
 }

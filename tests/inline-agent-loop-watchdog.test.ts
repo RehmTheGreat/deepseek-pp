@@ -205,7 +205,13 @@ describe('content.ts pagehide finalizer + zombie healing wiring (D1a/D1c, source
   const contentSource = readFileSync('entrypoints/content.ts', 'utf8');
 
   it('registers a pagehide finalizer that closes the running trace and aborts the live loop', () => {
-    expect(contentSource).toMatch(/addEventListener\(\s*"pagehide"/);
+    // Ownership contract (content-controller-ownership): the finalizer is
+    // registered through the inline-agent capability's lifecycle scope, never
+    // as a raw entrypoint-level window listener.
+    expect(contentSource).toMatch(
+      /scope\.listen\(\s*window,\s*"pagehide",\s*finalizeInlineAgentRunOnPageHide\s*\)/,
+    );
+    expect(contentSource).not.toMatch(/window\.addEventListener\(\s*"pagehide"/);
     const finalizer = contentSource
       .split('function finalizeInlineAgentRunOnPageHide(')[1]
       ?.split('\nfunction ')[0];
